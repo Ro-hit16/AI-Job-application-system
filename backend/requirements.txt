@@ -1,0 +1,50 @@
+# ─── FastAPI & Server ─────────────────────────────────────────────────────────
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+
+# ─── Database ─────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.35
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+alembic==1.13.3
+
+# ─── Config & Validation ──────────────────────────────────────────────────────
+pydantic==2.9.2
+pydantic-settings==2.5.2
+pydantic[email]==2.9.2
+
+# ─── Security ─────────────────────────────────────────────────────────────────
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ─── LangGraph / LangChain ────────────────────────────────────────────────────
+# ✅ Free ✅ Open Source ✅ Self-hosted (via Ollama)
+langgraph==0.2.55
+langchain==0.3.7
+langchain-ollama==0.2.1
+langchain-core==0.3.28
+langchain-community==0.3.7
+
+# ─── Vector Database ──────────────────────────────────────────────────────────
+# ✅ Free ✅ Open Source ✅ Self-hosted
+chromadb==0.5.18
+
+# ─── PDF Processing ───────────────────────────────────────────────────────────
+# ✅ Free ✅ Open Source
+pdfplumber==0.11.4
+
+# ─── Browser Automation ───────────────────────────────────────────────────────
+# ✅ Free ✅ Open Source
+playwright==1.48.0
+
+# ─── HTTP Client ──────────────────────────────────────────────────────────────
+httpx==0.27.2
+
+# ─── Scheduling ───────────────────────────────────────────────────────────────
+# ✅ Free ✅ Open Source
+apscheduler==3.10.4
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+aiofiles==24.1.0
