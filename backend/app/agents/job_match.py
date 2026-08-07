@@ -55,8 +55,6 @@ async def job_match_node(state: AgentState) -> dict:
         applications_to_process: list[ApplicationData] = []
 
         for job in raw_jobs:
-            print(f"DEBUG job keys: {list(job.keys())}, id={job.get('id')}, score will be computed")
-
             try:
                 # Get job vector from ChromaDB or recompute
                 job_embed_text = f"{job['title']} {job['company']} {job['description']}"
@@ -65,10 +63,15 @@ async def job_match_node(state: AgentState) -> dict:
                 score = await vector_service.compute_similarity_score(job_vector, resume_vector)
 
                 # Also do keyword-based scoring boost
-                keyword_score = _keyword_score(job, resume_data)
+                keyword_score, matched_skills = _keyword_score(job, resume_data)
                 final_score = round((score * 0.7) + (keyword_score * 0.3), 2)
 
                 job["match_score"] = final_score
+                job["match_reasons"] = _build_match_reasons(
+                    matched_skills=matched_skills,
+                    semantic_score=score,
+                    keyword_score=keyword_score,
+                )
 
                 # Extract required skills from job description
                 skill_data = await llm.generate_structured(
@@ -128,8 +131,11 @@ async def job_match_node(state: AgentState) -> dict:
         }
 
 
-def _keyword_score(job: JobData, resume_data: dict) -> float:
-    """Simple keyword overlap score (0-100) as a boost to vector similarity."""
+def _keyword_score(job: JobData, resume_data: dict) -> tuple[float, list[str]]:
+    """Simple keyword overlap score (0-100) as a boost to vector similarity.
+
+    Returns (score, matched_skills) so callers can explain the score.
+    """
     skills_flat = []
     for skill_list in resume_data.get("skills", {}).values():
         if isinstance(skill_list, list):
@@ -137,10 +143,35 @@ def _keyword_score(job: JobData, resume_data: dict) -> float:
 
     desc_lower = job.get("description", "").lower()
     if not skills_flat:
-        return 50.0
+        return 50.0, []
 
-    matches = sum(1 for skill in skills_flat if skill in desc_lower)
-    return min(100.0, (matches / len(skills_flat)) * 100)
+    matched = [skill for skill in skills_flat if skill in desc_lower]
+    score = min(100.0, (len(matched) / len(skills_flat)) * 100)
+    return score, matched
+
+
+def _build_match_reasons(matched_skills: list[str], semantic_score: float, keyword_score: float) -> list[str]:
+    """Human-readable reasons behind a job's match score, for display in the UI."""
+    reasons: list[str] = []
+
+    if matched_skills:
+        shown = matched_skills[:5]
+        extra = len(matched_skills) - len(shown)
+        skills_str = ", ".join(s.title() for s in shown)
+        if extra > 0:
+            skills_str += f" (+{extra} more)"
+        reasons.append(f"Resume matches {len(matched_skills)} required skill(s): {skills_str}")
+    else:
+        reasons.append("No direct skill keyword overlap found in the job description")
+
+    if semantic_score >= 75:
+        reasons.append("Strong overall semantic match between resume and job description")
+    elif semantic_score >= 50:
+        reasons.append("Moderate semantic match between resume and job description")
+    else:
+        reasons.append("Weak semantic match between resume and job description")
+
+    return reasons
 
 
 async def _update_job_score(job: JobData) -> None:
@@ -153,6 +184,8 @@ async def _update_job_score(job: JobData) -> None:
             if db_job:
                 db_job.status = "matched"
                 db_job.required_skills = job.get("required_skills", [])
+                db_job.match_score = job.get("match_score")
+                db_job.match_reasons = job.get("match_reasons", [])
     except Exception as e:
         logger.warning("Job DB update failed", extra={"error": str(e)})
 
