@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.core.logging import get_logger
 from app.database import get_db_context
 from app.models.application import Application
-from app.services.apply_service import apply_to_job
+from app.services.apply_service import ApplyInput, submit_application
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -84,15 +84,19 @@ async def _submit_application(app_data: ApplicationData, state: AgentState) -> A
     contact_info = resume_data.get("contact_info", {}) or {}
     cover_letter = app_data.get("cover_letter_content", "")
 
-    result = await apply_to_job(
+    apply_input = ApplyInput(
         application_id=app_data.get("application_id", "unknown"),
-        job=job,
-        contact_info=contact_info,
-        resume_file_path=resume_data.get("file_path"),
-        cover_letter=cover_letter,
-        job_description=job.get("description", ""),
+        job_url=job.get("url", ""),
+        portal=job.get("portal", ""),
         user_id=state.get("user_id", "unknown"),
+        contact_info=contact_info,
+        cover_letter=cover_letter,
+        resume_file_path=app_data.get("tailored_resume_path") or resume_data.get("file_path"),
+        resume_context=(resume_data.get("raw_text") or "")[:1500],
+        job_context=(job.get("description") or "")[:1500],
     )
+    apply_result = await submit_application(apply_input)
+    result = apply_result.as_dict()
 
     app_data["status"] = result["status"]
     app_data["confirmation_number"] = result.get("confirmation_number")
