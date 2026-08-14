@@ -68,13 +68,34 @@ APPLY_BUTTON_SELECTORS = [
     ".apply-button",
 ]
 
-SUBMIT_STEP_SELECTORS = [
+# Intermediate multi-step-form navigation only (Continue/Next/Review).
+# These NEVER submit the application — see FINAL_SUBMIT_SELECTORS below,
+# which is checked separately and gated on required-field validation.
+CONTINUE_STEP_SELECTORS = [
+    "button:has-text('Continue')",
+    "button:has-text('Next')",
+    "button[aria-label='Continue to next step']",
+    "button:has-text('Review')",
+]
+
+# The actual final-submission control. Only ever clicked after
+# `_validate_required_fields` has passed on the page in its current
+# (final-step) state. Text matching here explicitly excludes anything
+# that also looks like a Continue/Next control (see
+# `_find_final_submit_button`), since some portals reuse
+# `button[type='submit']` for intermediate wizard steps too.
+FINAL_SUBMIT_SELECTORS = [
     "button[aria-label='Submit application']",
+    "button:has-text('Submit application')",
     "button:has-text('Submit')",
     "button[type='submit']",
-    "button:has-text('Continue')", "button:has-text('Next')",
-    "button[aria-label='Continue to next step']",
 ]
+
+# If a button's visible text/aria-label contains any of these, it is
+# treated as an intermediate step control even if it also matches a
+# FINAL_SUBMIT_SELECTORS pattern (e.g. a "Next" button styled as
+# type='submit').
+_CONTINUE_TEXT_MARKERS = ("continue", "next", "review")
 
 LOGIN_SELECTORS = {
     "linkedin": {
@@ -186,10 +207,81 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
 
             answered = await _answer_application_questions(page, inp)
 
+            # Advance through intermediate Continue/Next/Review steps only.
+            # This never touches the final Submit control.
+            await _advance_through_steps(page)
+            await asyncio.sleep(1.0)
+
+            # Some portals complete the application on a single click (the
+            # "Apply" button itself was the whole flow, no separate form).
+            # Check for genuine confirmation text before assuming there's
+            # a further final-submit step to gate.
+            early_text = (await page.inner_text("body")).lower()
+            if any(phrase in early_text for phrase in SUCCESS_INDICATORS):
+                confirmation = _extract_confirmation_number(early_text)
+                screenshot_path = str(artifact_dir / f"{inp.application_id}.png")
+                await page.screenshot(path=screenshot_path, full_page=False)
+                return ApplyResult(
+                    status="submitted",
+                    confirmation_number=confirmation,
+                    screenshot_path=screenshot_path,
+                    login_verified=login_verified,
+                    resume_uploaded=resume_uploaded,
+                    answered_questions=answered,
+                )
+
+            # ── Final-submission safety gate ─────────────────────────────
+            # Re-validate required fields on the page in its current
+            # (final-step) state — the earlier fill pass may have been on
+            # an earlier step of a multi-step form. The final Submit
+            # button is NEVER clicked unless this passes.
             missing_required = await _validate_required_fields(page)
 
-            await _advance_through_steps(page)
-            await asyncio.sleep(1.5)
+            pre_submit_screenshot = str(artifact_dir / f"{inp.application_id}_pre_submit.png")
+            try:
+                await page.screenshot(path=pre_submit_screenshot, full_page=False)
+            except Exception:
+                pre_submit_screenshot = None
+
+            if missing_required:
+                result = ApplyResult(
+                    status="needs_manual_review",
+                    error_message=(
+                        "Required field(s) left empty immediately before final "
+                        f"submission — submit was NOT clicked: {', '.join(missing_required)}"
+                    ),
+                    missing_required_fields=missing_required,
+                    screenshot_path=pre_submit_screenshot,
+                    login_verified=login_verified,
+                    resume_uploaded=resume_uploaded,
+                    answered_questions=answered,
+                )
+                await _capture_failure(page, artifact_dir, inp.application_id, result)
+                logger.warning(
+                    "Blocked final submit: required fields missing",
+                    extra={"application_id": inp.application_id, "missing": missing_required},
+                )
+                return result
+
+            submit_button = await _find_final_submit_button(page)
+            if not submit_button:
+                result = ApplyResult(
+                    status="needs_manual_review",
+                    error_message=(
+                        "Validation passed but no distinguishable final Submit "
+                        "button was found (portal layout not recognized) — "
+                        "submit was NOT clicked."
+                    ),
+                    screenshot_path=pre_submit_screenshot,
+                    login_verified=login_verified,
+                    resume_uploaded=resume_uploaded,
+                    answered_questions=answered,
+                )
+                await _capture_failure(page, artifact_dir, inp.application_id, result)
+                return result
+
+            await submit_button.click()
+            await asyncio.sleep(2)
 
             page_text = (await page.inner_text("body")).lower()
             found_success = any(phrase in page_text for phrase in SUCCESS_INDICATORS)
@@ -197,6 +289,8 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
             screenshot_path = str(artifact_dir / f"{inp.application_id}.png")
             await page.screenshot(path=screenshot_path, full_page=False)
 
+            # The Submit button was clicked, but a click alone never implies
+            # success — only genuine confirmation text on the resulting page does.
             if found_success:
                 confirmation = _extract_confirmation_number(page_text)
                 return ApplyResult(
@@ -208,24 +302,12 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                     answered_questions=answered,
                 )
 
-            if missing_required:
-                result = ApplyResult(
-                    status="needs_manual_review",
-                    error_message=f"Required field(s) left empty: {', '.join(missing_required)}",
-                    missing_required_fields=missing_required,
-                    screenshot_path=screenshot_path,
-                    login_verified=login_verified,
-                    resume_uploaded=resume_uploaded,
-                    answered_questions=answered,
-                )
-                await _capture_failure(page, artifact_dir, inp.application_id, result)
-                return result
-
             result = ApplyResult(
                 status="needs_manual_review",
                 error_message=(
-                    "Clicked apply but could not confirm success on the page "
-                    "(may need login, CAPTCHA, or a multi-step form the bot didn't finish)."
+                    "Clicked final Submit but could not confirm success on the "
+                    "resulting page (may need login, CAPTCHA, or additional "
+                    "steps the bot didn't recognize)."
                 ),
                 screenshot_path=screenshot_path,
                 login_verified=login_verified,
