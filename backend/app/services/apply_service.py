@@ -61,12 +61,44 @@ SUCCESS_INDICATORS = [
 ]
 
 APPLY_BUTTON_SELECTORS = [
+    # Portal-specific (only ever reached for linkedin.com/indeed.com pages —
+    # i.e. jobs sourced via the paid Apify actors, see job_search agent).
     "button:has-text('Easy Apply')",
     ".jobs-apply-button",
     "[id='indeedApplyButton']", ".ia-IndeedApplyButton",
+    # Generic fallback for anything else.
     "button:has-text('Apply')", "a:has-text('Apply')",
     ".apply-button",
 ]
+
+# Most jobs in this system are NOT sourced from linkedin.com/indeed.com/
+# naukri.com — the free scrapers (Remotive, Arbeitnow, Himalayas, Adzuna;
+# see agents/job_search.py) point `job.url` at the ORIGINAL posting on
+# whatever ATS the employer uses. These are keyed by a substring of the
+# post-redirect page URL (`page.url`, not `inp.portal`, since the scraper's
+# `portal` field just names the aggregator, not the destination site) and
+# checked before falling back to the generic role/text search below.
+KNOWN_ATS_APPLY_SELECTORS: dict[str, list[str]] = {
+    "greenhouse.io": ["#apply_button", "a#apply_button", "div#apply-button a", "a:has-text('Apply for this job')"],
+    "lever.co": ["a.postings-btn", "a:has-text('Apply for this job')"],
+    "myworkdayjobs.com": ["a[data-automation-id='adventureButton']", "button[data-automation-id='adventureButton']"],
+    "ashbyhq.com": ["button:has-text('Apply for this Job')", "a:has-text('Apply for this Job')"],
+    "smartrecruiters.com": ["button.apply-button", "a.apply-button", "button:has-text('Apply now')"],
+    "workable.com": ["a[data-ui='overview-apply-button']", "a:has-text('Apply for this job')"],
+    "bamboohr.com": ["a.js-apply-link", "button:has-text('Apply for this Job')"],
+    "icims.com": ["a#iCIMS_ApplyOnlineButton", "button:has-text('Apply')"],
+    "recruitee.com": ["a[data-analytics-action='apply']", "button:has-text('Apply for this job')"],
+}
+
+# Visible text/aria-label substrings that disqualify an otherwise-matching
+# "Apply"-ish control — it's a filter/nav/already-applied element, not the
+# actual apply action. Checked case-insensitively against the FULL
+# accessible name, so e.g. "Apply filters" is excluded but "Apply Now" is not.
+_APPLY_DISQUALIFYING_TEXT = (
+    "already applied", "applied", "apply filter", "apply filters",
+    "apply salary", "apply coupon", "apply code", "apply changes",
+    "sort by", "job alert", "save search",
+)
 
 # Intermediate multi-step-form navigation only (Continue/Next/Review).
 # These NEVER submit the application — see FINAL_SUBMIT_SELECTORS below,
@@ -206,13 +238,25 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                 logger.warning("Failed to start Playwright tracing", extra={"error": str(e)})
 
             await page.goto(inp.job_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(1.5)
+            # Many ATS apply pages are client-rendered (React/Vue) and the
+            # Apply control doesn't exist in the DOM at domcontentloaded —
+            # wait for network activity to settle before searching for it,
+            # but don't hang forever on pages with long-polling/analytics.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
 
             clicked = await _click_apply(page)
             if not clicked:
+                diagnostics = await _collect_apply_diagnostics(page)
                 result = ApplyResult(
                     status="needs_manual_review",
-                    error_message="No Apply button found automatically — portal layout not recognized.",
+                    error_message=(
+                        "No Apply button found automatically — portal layout not "
+                        f"recognized. {diagnostics}"
+                    ),
                     login_verified=login_verified,
                 )
                 await _capture_failure(page, artifact_dir, inp.application_id, result)
@@ -409,16 +453,147 @@ async def _verify_login(page: Page, portal: str) -> Optional[bool]:
 # ─── Apply flow steps ───────────────────────────────────────────────────────
 
 async def _click_apply(page: Page) -> bool:
-    for sel in APPLY_BUTTON_SELECTORS:
+    """Find and click the real Apply control.
+
+    Tries, in order, across BOTH the main page and same-page iframes
+    (many ATS embeds — Greenhouse, Workable — render the actual posting
+    inside an <iframe>):
+      1. Known-ATS selectors, matched against the (post-redirect) page URL.
+      2. The existing enumerated selectors (LinkedIn/Indeed classes, plus
+         generic text/class fallbacks).
+      3. A semantic role-based search (`get_by_role("button"/"link", ...)`)
+         for anything accessibly named "apply", excluding controls whose
+         full name matches a disqualifying phrase (already-applied,
+         filters, job alerts, etc.) — see `_APPLY_DISQUALIFYING_TEXT`.
+
+    Returns True (and leaves the click already performed) on the first
+    visible, non-disqualified match; False if nothing usable was found
+    anywhere on the page or in its iframes.
+    """
+    frames = [page, *page.frames[1:]]  # page.frames[0] is the main frame itself
+
+    for frame in frames:
         try:
-            btn = await page.query_selector(sel)
-            if btn and await btn.is_visible():
-                await btn.click()
-                await asyncio.sleep(2)
+            url = frame.url
+        except Exception:
+            url = ""
+        for domain, selectors in KNOWN_ATS_APPLY_SELECTORS.items():
+            if domain not in url:
+                continue
+            if await _try_click_selectors(frame, selectors):
                 return True
+
+    for frame in frames:
+        if await _try_click_selectors(frame, APPLY_BUTTON_SELECTORS):
+            return True
+
+    for frame in frames:
+        if await _try_click_role_based(frame):
+            return True
+
+    return False
+
+
+async def _try_click_selectors(frame, selectors: list[str]) -> bool:
+    for sel in selectors:
+        try:
+            btn = await frame.query_selector(sel)
+            if not btn or not await btn.is_visible():
+                continue
+            text = (await btn.inner_text() or "").strip().lower()
+            aria = (await btn.get_attribute("aria-label") or "").strip().lower()
+            if _is_disqualified(text) or _is_disqualified(aria):
+                continue
+            await btn.click()
+            await asyncio.sleep(2)
+            return True
         except Exception:
             continue
     return False
+
+
+async def _try_click_role_based(frame) -> bool:
+    """Last-resort fallback: search by accessible role + name instead of a
+    fixed selector list, for custom-component ATS UIs (React/Vue apps that
+    render non-semantic clickable elements with only an accessible name).
+    """
+    apply_re = re.compile(r"\bapply\b", re.IGNORECASE)
+    for role in ("button", "link"):
+        try:
+            locator = frame.get_by_role(role, name=apply_re)
+            count = await locator.count()
+        except Exception:
+            continue
+        for i in range(min(count, 10)):
+            try:
+                candidate = locator.nth(i)
+                if not await candidate.is_visible():
+                    continue
+                name = (await candidate.inner_text() or "").strip().lower()
+                if _is_disqualified(name):
+                    continue
+                await candidate.click()
+                await asyncio.sleep(2)
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def _is_disqualified(text: str) -> bool:
+    if not text:
+        return False
+    return any(marker in text for marker in _APPLY_DISQUALIFYING_TEXT)
+
+
+async def _collect_apply_diagnostics(page: Page) -> str:
+    """Build a short, secret-free diagnostic summary for a failed Apply
+    detection, so a human (or a follow-up debugging pass) can see WHY
+    without re-running the bot. Logged in full; a bounded version is also
+    folded into the ApplyResult.error_message. Never includes form field
+    values, cookies, headers, or anything from LOGIN_SELECTORS/credentials.
+    """
+    info: dict = {"url": "", "title": "", "buttons": [], "apply_links": [], "iframes": []}
+    try:
+        info["url"] = page.url
+        info["title"] = await page.title()
+
+        buttons = await page.query_selector_all("button")
+        for b in buttons[:40]:
+            try:
+                if await b.is_visible():
+                    t = (await b.inner_text() or "").strip()
+                    if t:
+                        info["buttons"].append(t[:40])
+            except Exception:
+                continue
+        info["buttons"] = info["buttons"][:15]
+
+        links = await page.query_selector_all("a")
+        for a in links[:100]:
+            try:
+                if not await a.is_visible():
+                    continue
+                t = (await a.inner_text() or "").strip()
+                if t and "apply" in t.lower():
+                    info["apply_links"].append(t[:40])
+            except Exception:
+                continue
+        info["apply_links"] = info["apply_links"][:10]
+
+        info["iframes"] = [f.url for f in page.frames[1:] if f.url][:10]
+    except Exception as e:
+        logger.warning("Failed to collect apply diagnostics", extra={"error": str(e)})
+
+    logger.warning("Apply button not found — diagnostics", extra=info)
+
+    summary = (
+        f"Landed on: {info['title'][:60]!r} ({info['url'][:120]}). "
+        f"Visible buttons: {info['buttons'][:6]}. "
+        f"Apply-like links: {info['apply_links'][:6]}. "
+        f"Iframes: {len(info['iframes'])}."
+    )
+    return summary[:600]
 
 
 async def _upload_resume(page: Page, resume_file_path: str) -> bool:
@@ -462,7 +637,6 @@ async def _upload_resume(page: Page, resume_file_path: str) -> bool:
 async def _fill_contact_fields(page: Page, contact_info: dict) -> None:
     field_map = {
         "input[name*='name'], input[id*='name']": contact_info.get("name", ""),
-        "input[name*='email'], input[type='email']": contact_info.get("email", ""),
         "input[name*='phone'], input[type='tel']": contact_info.get("phone", ""),
     }
     for selector, value in field_map.items():
@@ -476,6 +650,38 @@ async def _fill_contact_fields(page: Page, contact_info: dict) -> None:
                     break
             except Exception:
                 continue
+
+    # Email gets its own, broader pass. ATS forms vary widely in how the
+    # email field is marked up — some only expose it via placeholder or
+    # aria-label (e.g. placeholder="Enter your email") with no matching
+    # name/type/id hint, which the old single `input[name*='email'],
+    # input[type='email']` selector missed. Matching is case-insensitive
+    # (the `i` flag) since attribute values aren't guaranteed lowercase.
+    email_value = contact_info.get("email", "")
+    if not email_value:
+        # Most common real cause of an unfilled email field: the resume
+        # parser (LLM-extracted contact_info) didn't find one. See the
+        # account-email fallback in application.py / applications.py,
+        # which is the actual fix for that upstream gap — this log line
+        # is diagnostic only, no PII beyond the fact that it's missing.
+        logger.warning("No email value available in contact_info to fill")
+        return
+    email_selectors = [
+        "input[type='email']",
+        "input[name*='email' i]",
+        "input[id*='email' i]",
+        "input[placeholder*='email' i]",
+        "input[aria-label*='email' i]",
+    ]
+    for sel in email_selectors:
+        try:
+            el = await page.query_selector(sel)
+            if el and await el.is_visible():
+                await el.fill(email_value)
+                return
+        except Exception:
+            continue
+    logger.warning("Email value was available but no matching email field was found on the page")
 
 
 async def _fill_cover_letter(page: Page, cover_letter: str) -> None:
@@ -570,7 +776,7 @@ async def _validate_required_fields(page: Page) -> list[str]:
 async def _advance_through_steps(page: Page, max_steps: int = 5) -> None:
     for _ in range(max_steps):
         clicked = False
-        for sel in SUBMIT_STEP_SELECTORS:
+        for sel in CONTINUE_STEP_SELECTORS:
             try:
                 btn = await page.query_selector(sel)
                 if btn and await btn.is_visible():
@@ -582,6 +788,34 @@ async def _advance_through_steps(page: Page, max_steps: int = 5) -> None:
                 continue
         if not clicked:
             break
+
+
+async def _find_final_submit_button(page: Page):
+    """Locate the real final-submission control, distinct from any
+    intermediate Continue/Next/Review control.
+
+    Only ever called AFTER `_validate_required_fields` has passed on the
+    page in its current (final-step) state — see `submit_application`.
+    A button is only returned if its visible text/aria-label does NOT
+    contain any `_CONTINUE_TEXT_MARKERS` substring, so a "Next" button
+    that happens to also be `type='submit'` is never mistaken for the
+    final Submit control.
+    """
+    frames = [page, *page.frames[1:]]
+    for frame in frames:
+        for sel in FINAL_SUBMIT_SELECTORS:
+            try:
+                btn = await frame.query_selector(sel)
+                if not btn or not await btn.is_visible():
+                    continue
+                text = (await btn.inner_text() or "").strip().lower()
+                aria = (await btn.get_attribute("aria-label") or "").strip().lower()
+                if any(marker in text or marker in aria for marker in _CONTINUE_TEXT_MARKERS):
+                    continue
+                return btn
+            except Exception:
+                continue
+    return None
 
 
 def _extract_confirmation_number(page_text: str) -> str:
