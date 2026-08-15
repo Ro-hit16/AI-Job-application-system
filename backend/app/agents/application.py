@@ -17,7 +17,7 @@ from app.config import get_settings
 from app.core.logging import get_logger
 from app.database import get_db_context
 from app.models.application import Application
-from app.services.apply_service import ApplyInput, submit_application
+from app.services.apply_service import ApplyInput, resolve_contact_email, submit_application
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -83,25 +83,33 @@ async def _submit_application(app_data: ApplicationData, state: AgentState) -> A
     resume_data = app_data.get("resume", {})
     contact_info = resume_data.get("contact_info", {}) or {}
     cover_letter = app_data.get("cover_letter_content", "")
+    user_id = state.get("user_id", "unknown")
+
+    # Resume-extracted email may be missing (LLM extraction isn't 100%
+    # reliable) — fall back to the authenticated user's verified account
+    # email before building ApplyInput. See resolve_contact_email() for
+    # the full priority rules; it never overwrites a valid resume email.
+    contact_info = await resolve_contact_email(contact_info, user_id)
 
     apply_input = ApplyInput(
         application_id=app_data.get("application_id", "unknown"),
         job_url=job.get("url", ""),
-        portal=job.get("portal", ""),
-        user_id=state.get("user_id", "unknown"),
+        portal=(job.get("portal") or "unknown").lower(),
+        user_id=user_id,
         contact_info=contact_info,
         cover_letter=cover_letter,
-        resume_file_path=app_data.get("tailored_resume_path") or resume_data.get("file_path"),
-        resume_context=(resume_data.get("raw_text") or "")[:1500],
-        job_context=(job.get("description") or "")[:1500],
+        resume_file_path=resume_data.get("file_path"),
+        application_questions=app_data.get("application_questions", []) or [],
+        resume_context=resume_data.get("tailored_content", "") or resume_data.get("summary", ""),
+        job_context=job.get("description", ""),
     )
-    apply_result = await submit_application(apply_input)
-    result = apply_result.as_dict()
 
-    app_data["status"] = result["status"]
-    app_data["confirmation_number"] = result.get("confirmation_number")
-    app_data["confirmation_screenshot_path"] = result.get("screenshot_path")
-    app_data["error_message"] = result.get("error_message")
+    result = await submit_application(apply_input)
+
+    app_data["status"] = result.status
+    app_data["confirmation_number"] = result.confirmation_number
+    app_data["confirmation_screenshot_path"] = result.screenshot_path
+    app_data["error_message"] = result.error_message
     return app_data
 
 

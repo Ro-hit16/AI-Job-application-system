@@ -7,8 +7,7 @@ automation. Both the LangGraph `application` agent node
 (app/api/v1/applications.py) call into this module instead of each
 maintaining their own divergent Playwright implementation.
 
-Design principles carried over from the previous submission-integrity
-fix, now enforced in one place instead of two:
+Design principles:
   - NEVER fabricate a confirmation number or a "submitted" status.
     A submission is only ever marked `submitted` when real success text
     is found on the resulting page.
@@ -20,7 +19,7 @@ fix, now enforced in one place instead of two:
     human reviewing the failure has enough to diagnose it without
     re-running the bot.
 
-New in this consolidation:
+Features:
   - Login verification for portals with stored credentials, so we don't
     silently try to fill an application form we're not authenticated for.
   - Resume file upload with verification that the filename actually
@@ -33,6 +32,12 @@ New in this consolidation:
   - AI-generated answers for free-text application questions (e.g. "Why
     do you want to work here?"), using the tailored resume + job
     description as context.
+  - ATS-aware / iframe-aware Apply-button detection, plus a semantic
+    role-based fallback, since most jobs here come from third-party ATS
+    pages (Greenhouse, Lever, Workday, etc.) rather than linkedin.com/
+    indeed.com/naukri.com directly.
+  - A verified-account-email fallback (`resolve_contact_email`) for when
+    resume parsing didn't extract an email — see its docstring below.
 """
 from __future__ import annotations
 
@@ -44,9 +49,12 @@ from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import Page, async_playwright
+from sqlalchemy import select
 
 from app.config import get_settings
 from app.core.logging import get_logger
+from app.database import get_db_context
+from app.models.user import User
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -191,6 +199,50 @@ class ApplyResult:
             "resume_uploaded": self.resume_uploaded,
             "answered_questions": self.answered_questions,
         }
+
+
+# ─── Contact-info resolution ─────────────────────────────────────────────────
+
+async def resolve_contact_email(contact_info: dict, user_id: str) -> dict:
+    """Fill contact_info['email'] from the authenticated User.email when the
+    resume parser didn't extract one (LLM-based resume extraction sometimes
+    misses it). Priority: resume email (if present/non-empty) > User.email.
+    Never overwrites a valid resume-extracted email.
+
+    This is the ONE place this fallback is implemented. Both call sites
+    (agents/application.py, api/v1/applications.py) call it while building
+    their ApplyInput.contact_info, rather than each having their own copy.
+
+    Fails safe: if user_id isn't resolvable or the lookup fails/returns
+    nothing, contact_info is returned unchanged — the later required-field
+    validation in submit_application() will correctly block submission on
+    an empty email rather than this function silently letting one through.
+    """
+    if contact_info.get("email"):
+        return contact_info
+
+    try:
+        user_uuid = uuid.UUID(str(user_id))
+    except (ValueError, TypeError):
+        logger.info("No usable user_id to resolve email fallback", extra={"user_id": user_id})
+        return contact_info
+
+    try:
+        async with get_db_context() as db:
+            result = await db.execute(select(User.email).where(User.id == user_uuid))
+            user_email = result.scalar_one_or_none()
+    except Exception as e:
+        logger.warning("Email fallback lookup failed", extra={"user_id": user_id, "error": str(e)})
+        return contact_info
+
+    if user_email:
+        contact_info = dict(contact_info)
+        contact_info["email"] = user_email
+        logger.info(
+            "contact_info.email missing from resume — used User.email as fallback",
+            extra={"user_id": user_id},
+        )
+    return contact_info
 
 
 async def submit_application(inp: ApplyInput) -> ApplyResult:
@@ -654,16 +706,17 @@ async def _fill_contact_fields(page: Page, contact_info: dict) -> None:
     # Email gets its own, broader pass. ATS forms vary widely in how the
     # email field is marked up — some only expose it via placeholder or
     # aria-label (e.g. placeholder="Enter your email") with no matching
-    # name/type/id hint, which the old single `input[name*='email'],
-    # input[type='email']` selector missed. Matching is case-insensitive
+    # name/type/id hint, which a single `input[name*='email'],
+    # input[type='email']` selector would miss. Matching is case-insensitive
     # (the `i` flag) since attribute values aren't guaranteed lowercase.
     email_value = contact_info.get("email", "")
     if not email_value:
         # Most common real cause of an unfilled email field: the resume
-        # parser (LLM-extracted contact_info) didn't find one. See the
-        # account-email fallback in application.py / applications.py,
-        # which is the actual fix for that upstream gap — this log line
-        # is diagnostic only, no PII beyond the fact that it's missing.
+        # parser (LLM-extracted contact_info) didn't find one AND the
+        # account-email fallback (resolve_contact_email, called by both
+        # application.py and applications.py before building ApplyInput)
+        # also had nothing to fall back to. This log line is diagnostic
+        # only — no PII beyond the fact that it's missing.
         logger.warning("No email value available in contact_info to fill")
         return
     email_selectors = [
