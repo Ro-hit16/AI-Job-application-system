@@ -140,6 +140,7 @@ class ApplyResult:
     error_message: Optional[str] = None
     screenshot_path: Optional[str] = None
     html_dump_path: Optional[str] = None
+    trace_path: Optional[str] = None
     missing_required_fields: list[str] = field(default_factory=list)
     login_verified: Optional[bool] = None
     resume_uploaded: Optional[bool] = None
@@ -152,6 +153,7 @@ class ApplyResult:
             "error_message": self.error_message,
             "screenshot_path": self.screenshot_path,
             "html_dump_path": self.html_dump_path,
+            "trace_path": self.trace_path,
             "missing_required_fields": self.missing_required_fields,
             "login_verified": self.login_verified,
             "resume_uploaded": self.resume_uploaded,
@@ -167,6 +169,8 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
 
     artifact_dir = Path(settings.UPLOAD_DIR) / inp.user_id / "screenshots"
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    trace_dir = Path(settings.UPLOAD_DIR) / inp.user_id / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -182,8 +186,24 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
         )
         page = await context.new_page()
 
+        # Tracked so `finally` knows whether a trace still needs to be
+        # stopped (and whether it was already stopped/saved on a failure
+        # path below).
+        tracing_active = False
+
         try:
             login_verified = await _verify_login(page, inp.portal)
+
+            # Tracing is started only AFTER the login attempt, never during
+            # it — stored portal credentials are filled into the login form
+            # by `_verify_login`, and a trace's DOM snapshots/screenshots
+            # could otherwise capture them. This is the main avoidable
+            # secret-exposure risk for tracing; see module docstring.
+            try:
+                await context.tracing.start(screenshots=True, snapshots=True, sources=False)
+                tracing_active = True
+            except Exception as e:
+                logger.warning("Failed to start Playwright tracing", extra={"error": str(e)})
 
             await page.goto(inp.job_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(1.5)
@@ -196,6 +216,7 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                     login_verified=login_verified,
                 )
                 await _capture_failure(page, artifact_dir, inp.application_id, result)
+                tracing_active = await _save_trace(context, trace_dir, inp.application_id, tracing_active, result)
                 return result
 
             resume_uploaded = None
@@ -257,6 +278,7 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                     answered_questions=answered,
                 )
                 await _capture_failure(page, artifact_dir, inp.application_id, result)
+                tracing_active = await _save_trace(context, trace_dir, inp.application_id, tracing_active, result)
                 logger.warning(
                     "Blocked final submit: required fields missing",
                     extra={"application_id": inp.application_id, "missing": missing_required},
@@ -278,6 +300,7 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                     answered_questions=answered,
                 )
                 await _capture_failure(page, artifact_dir, inp.application_id, result)
+                tracing_active = await _save_trace(context, trace_dir, inp.application_id, tracing_active, result)
                 return result
 
             await submit_button.click()
@@ -315,6 +338,7 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                 answered_questions=answered,
             )
             await _capture_failure(page, artifact_dir, inp.application_id, result)
+            tracing_active = await _save_trace(context, trace_dir, inp.application_id, tracing_active, result)
             return result
 
         except Exception as e:
@@ -324,8 +348,21 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
                 await _capture_failure(page, artifact_dir, inp.application_id, result)
             except Exception:
                 pass
+            try:
+                tracing_active = await _save_trace(context, trace_dir, inp.application_id, tracing_active, result)
+            except Exception:
+                pass
             return result
         finally:
+            # Any success path (or any path above that didn't already save
+            # a trace) reaches here with tracing still active — stop it
+            # without a path so Playwright discards it rather than writing
+            # an unused trace file for successful, non-diagnostic runs.
+            if tracing_active:
+                try:
+                    await context.tracing.stop()
+                except Exception as e:
+                    logger.warning("Failed to stop Playwright tracing", extra={"error": str(e)})
             await context.close()
             await browser.close()
 
@@ -574,3 +611,33 @@ async def _capture_failure(page: Page, artifact_dir: Path, application_id: str, 
         result.html_dump_path = str(html_path)
     except Exception as e:
         logger.warning("Failed to capture failure artifacts", extra={"error": str(e)})
+
+
+async def _save_trace(context, trace_dir: Path, application_id: str, tracing_active: bool, result: ApplyResult) -> bool:
+    """Stop and save the running Playwright trace for a failed or
+    needs-manual-review attempt, recording its path on `result`.
+
+    Returns the new `tracing_active` state (always False after this call)
+    so the caller stops treating the trace as still-running.
+
+    Only called on failure / needs_manual_review paths — successful
+    attempts don't need a diagnostic trace, so `submit_application`'s
+    `finally` block stops (and discards) tracing for those instead.
+
+    Note: like the screenshot/HTML capture above, this only records the
+    application page's state from the point tracing started (after
+    login — see `submit_application`), not portal credentials.
+    """
+    if not tracing_active:
+        return False
+    trace_path = str(trace_dir / f"{application_id}.zip")
+    try:
+        await context.tracing.stop(path=trace_path)
+        result.trace_path = trace_path
+    except Exception as e:
+        logger.warning("Failed to save Playwright trace", extra={"error": str(e)})
+        try:
+            await context.tracing.stop()
+        except Exception:
+            pass
+    return False
