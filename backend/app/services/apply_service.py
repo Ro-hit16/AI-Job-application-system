@@ -251,6 +251,27 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
     """
     logger.info("Submitting application", extra={"portal": inp.portal, "url": inp.job_url})
 
+    # The application-form email must match the portal account the bot is
+    # logged into (see PORTAL_LOGIN_CREDENTIALS / _verify_login above),
+    # NOT the resume-extracted email or the User's account email — those
+    # may belong to a different inbox entirely. Overwrite here, before any
+    # form filling, so _fill_contact_fields() (and the required-field
+    # gate below) see the portal login email. If no email is configured
+    # for this portal, contact_info is left as-is (whatever the resume/
+    # User.email fallback produced) rather than being cleared — the
+    # required-field validation below still correctly blocks submission
+    # if it ends up empty either way.
+    portal_email = _portal_login_email(inp.portal)
+    if portal_email:
+        inp.contact_info = dict(inp.contact_info)
+        inp.contact_info["email"] = portal_email
+        logger.info("Using portal login email for application form", extra={"portal": inp.portal})
+    else:
+        logger.info(
+            "No portal login email configured — falling back to existing contact_info email",
+            extra={"portal": inp.portal},
+        )
+
     artifact_dir = Path(settings.UPLOAD_DIR) / inp.user_id / "screenshots"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     trace_dir = Path(settings.UPLOAD_DIR) / inp.user_id / "traces"
@@ -465,17 +486,37 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
 
 # ─── Login ──────────────────────────────────────────────────────────────────
 
+# Single source of truth for portal login credentials + login URL, used by
+# both _verify_login() (to actually authenticate) and _portal_login_email()
+# (to determine the application-form contact email — see submit_application,
+# which overwrites ApplyInput.contact_info["email"] with this value before
+# _fill_contact_fields() runs, so the application is filled with the SAME
+# identity the bot is logged in as, rather than the resume-extracted or
+# account email).
+PORTAL_LOGIN_CREDENTIALS: dict[str, tuple[Optional[str], Optional[str], str]] = {
+    "linkedin": (settings.LINKEDIN_EMAIL, settings.LINKEDIN_PASSWORD, "https://www.linkedin.com/login"),
+    "indeed": (settings.INDEED_EMAIL, settings.INDEED_PASSWORD, "https://secure.indeed.com/auth"),
+    "naukri": (settings.NAUKRI_EMAIL, settings.NAUKRI_PASSWORD, "https://www.naukri.com/nlogin/login"),
+}
+
+
+def _portal_login_email(portal: str) -> Optional[str]:
+    """Return the configured login email for `portal` — the exact same
+    settings.*_EMAIL value _verify_login() uses to authenticate — or
+    None if no email is configured for this portal (e.g. an unrecognized
+    portal, or one with no credentials set up).
+    """
+    creds = PORTAL_LOGIN_CREDENTIALS.get(portal)
+    return creds[0] if creds else None
+
+
 async def _verify_login(page: Page, portal: str) -> Optional[bool]:
     """Attempt to log in to the portal using stored credentials, if any
     are configured. Returns True/False if a login attempt was made,
     or None if no credentials are configured for this portal (in which
     case the apply flow proceeds unauthenticated, as before).
     """
-    creds = {
-        "linkedin": (settings.LINKEDIN_EMAIL, settings.LINKEDIN_PASSWORD, "https://www.linkedin.com/login"),
-        "indeed": (settings.INDEED_EMAIL, settings.INDEED_PASSWORD, "https://secure.indeed.com/auth"),
-        "naukri": (settings.NAUKRI_EMAIL, settings.NAUKRI_PASSWORD, "https://www.naukri.com/nlogin/login"),
-    }.get(portal)
+    creds = PORTAL_LOGIN_CREDENTIALS.get(portal)
 
     if not creds or not creds[0] or not creds[1]:
         return None  # no credentials configured for this portal — nothing to verify

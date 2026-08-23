@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     INDEED_PASSWORD: Optional[str] = None
     NAUKRI_EMAIL: Optional[str] = None
     NAUKRI_PASSWORD: Optional[str] = None
-
+    APIFY_TOKEN: Optional[str] = None
     ADZUNA_APP_ID: Optional[str] = None
     ADZUNA_APP_KEY: Optional[str] = None
 
