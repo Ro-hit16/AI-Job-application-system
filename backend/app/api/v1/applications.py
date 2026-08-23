@@ -14,18 +14,10 @@ from app.models.job import Job
 from app.models.resume import Resume
 from app.schemas import ApplicationOut, ApprovalAction
 from app.core.logging import get_logger
+from app.services.apply_service import ApplyInput, resolve_contact_email, submit_application
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 logger = get_logger(__name__)
-
-# Phrases that indicate REAL success on a confirmation page.
-# If none of these appear, we do NOT claim success.
-SUCCESS_INDICATORS = [
-    "application submitted", "application received", "thank you for applying",
-    "successfully applied", "your application has been sent", "application sent",
-    "we've received your application", "applied successfully", "thanks for applying",
-    "application complete", "submission successful",
-]
 
 
 from sqlalchemy.orm import selectinload
@@ -198,6 +190,10 @@ async def mark_manually_applied(
 
 
 # ─── Background submission with HONEST verification ──────────────────────────
+# Delegates entirely to app/services/apply_service.py — see that module for
+# the actual Playwright automation, login verification, resume upload,
+# required-field validation, and success-confirmation logic. This file only
+# assembles the ApplyInput from the DB and persists the ApplyResult back.
 
 async def _submit_application_background(application_id: str, user_id: str) -> None:
     logger.info("Background submission started", extra={"app_id": application_id})
@@ -217,6 +213,11 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
             return
 
         contact_info = resume.contact_info if resume and resume.contact_info else {}
+        # Resume-extracted email may be missing — fall back to the
+        # authenticated user's verified account email. See
+        # resolve_contact_email() docstring for the exact priority rules;
+        # it never overwrites a valid resume-extracted email.
+        contact_info = await resolve_contact_email(contact_info, user_id)
 
         cover_letter = ""
         if app.cover_letter_path:
@@ -226,38 +227,41 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
             except Exception:
                 pass
 
-        result = await _attempt_submission(
+        apply_input = ApplyInput(
             application_id=application_id,
             job_url=job.url,
-            portal=job.portal,
+            portal=(job.portal or "unknown").lower(),
+            user_id=user_id,
             contact_info=contact_info,
             cover_letter=cover_letter,
-            user_id=user_id,
+            resume_file_path=getattr(resume, "file_path", None) if resume else None,
+            job_context=job.description or "",
         )
+        result = await submit_application(apply_input)
 
         await _update_result(
             application_id,
-            result["status"],
-            confirmation=result.get("confirmation_number"),
-            error=result.get("error_message"),
-            screenshot=result.get("screenshot_path"),
+            result.status,
+            confirmation=result.confirmation_number,
+            error=result.error_message,
+            screenshot=result.screenshot_path,
         )
 
         from app.services.notification_service import get_notification_service
         notif = get_notification_service()
 
-        if result["status"] == "submitted":
+        if result.status == "submitted":
             await notif.notify_application_submitted(
                 job_title=job.title, company=job.company,
-                confirmation=result.get("confirmation_number", "Verified on page"),
+                confirmation=result.confirmation_number or "Verified on page",
             )
-        elif result["status"] == "needs_manual_review":
+        elif result.status == "needs_manual_review":
             await notif.send_email(
                 subject=f"⚠️ Needs your review: {job.title} at {job.company}",
                 body=f"""
                 <h2>Could not confirm automatic submission</h2>
                 <p><strong>{job.title}</strong> at <strong>{job.company}</strong></p>
-                <p>Reason: {result.get('error_message', 'No success confirmation detected on page')}</p>
+                <p>Reason: {result.error_message or 'No success confirmation detected on page'}</p>
                 <p>This usually means the form requires login, has a custom layout, or needs a CAPTCHA.</p>
                 <p><strong>Please apply manually:</strong> <a href="{job.url}">{job.url}</a></p>
                 <p>A screenshot of what the bot saw is saved on your server for reference.</p>
@@ -266,14 +270,14 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
         else:
             await notif.notify_application_failed(
                 job_title=job.title, company=job.company,
-                error=result.get("error_message", "Unknown error"),
+                error=result.error_message or "Unknown error",
             )
 
     except Exception as e:
         import traceback
         full_error = traceback.format_exc()
-        logger.error("Playwright submission failed", extra={"full_traceback": full_error})
-        return {"status": "failed", "error_message": f"Playwright error: {repr(e)} | {full_error}"}
+        logger.error("Application submission failed", extra={"full_traceback": full_error})
+        await _update_result(application_id, "failed", error=f"Unhandled error: {e!r}")
 
 
 async def _update_result(application_id: str, status: str, confirmation: str | None = None,
@@ -292,138 +296,3 @@ async def _update_result(application_id: str, status: str, confirmation: str | N
                     app.applied_at = datetime.now(timezone.utc)
     except Exception as e:
         logger.error("Failed to update application result", extra={"error": str(e)})
-
-
-async def _attempt_submission(
-    application_id: str, job_url: str, portal: str,
-    contact_info: dict, cover_letter: str, user_id: str,
-) -> dict:
-    """
-    Attempt Playwright submission. CRITICAL: only returns 'submitted' if
-    real success text is found on the resulting page. Otherwise returns
-    'needs_manual_review' — never fabricates a confirmation number.
-    """
-    from app.config import get_settings
-    from pathlib import Path
-    import asyncio
-    settings = get_settings()
-
-    try:
-        from playwright.async_api import async_playwright
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            )
-            page = await context.new_page()
-
-            try:
-                await page.goto(job_url, wait_until="domcontentloaded", timeout=30000)
-                await asyncio.sleep(2)
-
-                screenshot_dir = Path(settings.UPLOAD_DIR) / user_id / "screenshots"
-                screenshot_dir.mkdir(parents=True, exist_ok=True)
-                before_screenshot = str(screenshot_dir / f"{application_id}_before.png")
-                await page.screenshot(path=before_screenshot)
-
-                # Try to click apply / submit
-                clicked_something = await _try_click_apply_flow(page, contact_info, cover_letter)
-
-                await asyncio.sleep(2)
-                after_screenshot = str(screenshot_dir / f"{application_id}.png")
-                await page.screenshot(path=after_screenshot, full_page=False)
-
-                # Get visible page text to check for REAL success indicators
-                page_text = (await page.inner_text("body")).lower()
-
-                found_success = any(phrase in page_text for phrase in SUCCESS_INDICATORS)
-
-                if found_success:
-                    # Try to extract a real confirmation/reference number if shown
-                    import re
-                    ref_match = re.search(r"(reference|confirmation|application)\s*(id|number|#)?[:\s]*([A-Z0-9\-]{4,20})", page_text, re.IGNORECASE)
-                    confirmation = ref_match.group(3) if ref_match else "Confirmed (text match on page)"
-                    return {
-                        "status": "submitted",
-                        "confirmation_number": confirmation,
-                        "screenshot_path": after_screenshot,
-                    }
-                elif not clicked_something:
-                    return {
-                        "status": "needs_manual_review",
-                        "error_message": "No Apply button found automatically — portal layout not recognized. Apply manually.",
-                        "screenshot_path": after_screenshot,
-                    }
-                else:
-                    return {
-                        "status": "needs_manual_review",
-                        "error_message": "Clicked apply but could not confirm success on the page (may need login, CAPTCHA, or multi-step form). Check screenshot and apply manually if unsure.",
-                        "screenshot_path": after_screenshot,
-                    }
-
-            finally:
-                await context.close()
-                await browser.close()
-
-    except Exception as e:
-        return {"status": "failed", "error_message": f"Playwright error: {str(e)}"}
-
-
-async def _try_click_apply_flow(page, contact_info: dict, cover_letter: str) -> bool:
-    """Attempt to click apply buttons and fill basic fields. Returns True if anything was clicked."""
-    import asyncio
-    clicked = False
-
-    apply_selectors = [
-        "button:has-text('Apply')", "a:has-text('Apply')",
-        ".jobs-apply-button", "[id='indeedApplyButton']", ".ia-IndeedApplyButton",
-        "button:has-text('Easy Apply')", ".apply-button",
-    ]
-
-    for sel in apply_selectors:
-        try:
-            btn = await page.query_selector(sel)
-            if btn and await btn.is_visible():
-                await btn.click()
-                clicked = True
-                await asyncio.sleep(2)
-                break
-        except Exception:
-            continue
-
-    if not clicked:
-        return False
-
-    # Try filling common fields
-    field_map = {
-        "input[name*='email'], input[type='email']": contact_info.get("email", ""),
-        "input[name*='phone'], input[type='tel']": contact_info.get("phone", ""),
-        "input[name*='name'], input[id*='name']": contact_info.get("name", ""),
-        "textarea": cover_letter[:2000] if cover_letter else "",
-    }
-    for selector, value in field_map.items():
-        if not value:
-            continue
-        for sel in selector.split(", "):
-            try:
-                el = await page.query_selector(sel.strip())
-                if el and await el.is_visible():
-                    await el.fill(value)
-                    break
-            except Exception:
-                continue
-
-    # Try clicking through submit/next/continue buttons
-    for _ in range(4):
-        for sel in ["button[type='submit']", "button:has-text('Submit')", "button:has-text('Continue')", "button:has-text('Next')"]:
-            try:
-                btn = await page.query_selector(sel)
-                if btn and await btn.is_visible():
-                    await btn.click()
-                    await asyncio.sleep(1.5)
-                    break
-            except Exception:
-                continue
-
-    return True

@@ -13,6 +13,7 @@ class JobData(TypedDict, total=False):
     url_hash: str
     required_skills: list[str]
     match_score: float
+    match_reasons: list[str]
     embedding_id: str
     status: str
 

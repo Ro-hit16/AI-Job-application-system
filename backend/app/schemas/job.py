@@ -16,6 +16,10 @@ class JobOut(BaseModel):
     required_skills: Optional[Any] = None
     status: str
     scraped_at: datetime
+    expires_at: Optional[datetime] = None
+    match_score: Optional[float] = None
+    match_reasons: Optional[list[str]] = None
+    last_seen_at: Optional[datetime] = None
  
     model_config = {"from_attributes": True}
  
@@ -27,4 +31,3 @@ class JobFilter(BaseModel):
     search: Optional[str] = None
     limit: int = Field(default=20, le=100)
     offset: int = Field(default=0, ge=0)
- 

@@ -17,6 +17,7 @@ class Job(Base):
         Index("ix_jobs_portal_status", "portal", "status"),
         Index("ix_jobs_url_hash", "url_hash", unique=True),
         Index("ix_jobs_scraped_at", "scraped_at"),
+        Index("ix_jobs_last_seen_at", "last_seen_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -101,6 +102,23 @@ class Job(Base):
     )
 
     expires_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    # AI ranking (populated by job_match agent against the active resume)
+    match_score: Mapped[Optional[float]] = mapped_column(
+        nullable=True
+    )
+
+    match_reasons: Mapped[Optional[list]] = mapped_column(
+        JSONB,
+        nullable=True
+    )
+
+    # Scheduled sync bookkeeping — updated every time a refresh run sees this
+    # job again; used to detect/expire postings that have disappeared upstream.
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True
     )

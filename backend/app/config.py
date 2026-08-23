@@ -21,7 +21,9 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # Security
-    SECRET_KEY: str = "CHANGE_ME_IN_PRODUCTION_32_chars_minimum"
+    # No default on purpose — must be set via env var / .env. App will fail to
+    # start without it rather than silently running with a weak/shared key.
+    SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
@@ -75,9 +77,9 @@ class Settings(BaseSettings):
     # Notifications
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
-    SMTP_USERNAME: Optional[str] = "rohitdevkar333@gmail.com"
-    SMTP_PASSWORD: Optional[str] = "qcrf hvbc veto xcxm"
-    NOTIFICATION_EMAIL_TO: Optional[str] = "rohitdevkar333@gmail.com"
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    NOTIFICATION_EMAIL_TO: Optional[str] = None
     WEBHOOK_URL: Optional[str] = None
     
 
@@ -91,15 +93,15 @@ class Settings(BaseSettings):
     # Register free: https://developer.adzuna.com/
 
     # Portal credentials for Playwright auto-apply
-    LINKEDIN_EMAIL: Optional[str] = "rohitdevkar301@gmail.com"
-    LINKEDIN_PASSWORD: Optional[str] = "Rohitdevkar@16"
-    INDEED_EMAIL: Optional[str] = "rohitdevkar301@gmail.com"
-    INDEED_PASSWORD: Optional[str] = "Rohitdevkar@16"
-    NAUKRI_EMAIL: Optional[str] = "rohitdevkar301@gmail.com"
-    NAUKRI_PASSWORD: Optional[str] = "Rohitdevkar@16"
-
-    ADZUNA_APP_ID: Optional[str] = "d030128d"
-    ADZUNA_APP_KEY: Optional[str] = "39065d453f97c5a83690a60358c24151"
+    LINKEDIN_EMAIL: Optional[str] = None
+    LINKEDIN_PASSWORD: Optional[str] = None
+    INDEED_EMAIL: Optional[str] = None
+    INDEED_PASSWORD: Optional[str] = None
+    NAUKRI_EMAIL: Optional[str] = None
+    NAUKRI_PASSWORD: Optional[str] = None
+    APIFY_TOKEN: Optional[str] = None
+    ADZUNA_APP_ID: Optional[str] = None
+    ADZUNA_APP_KEY: Optional[str] = None
 
     DATABASE_URL: str = ""
     DATABASE_URL_SYNC: str = ""
@@ -133,5 +135,3 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
-
-

@@ -21,18 +21,23 @@ async def list_jobs(
     portal: str | None = None,
     status: str | None = None,
     search: str | None = None,
+    min_score: float | None = Query(default=None, ge=0, le=100),
     limit: int = Query(default=20, le=100),
     offset: int = Query(default=0, ge=0),
     user_id: UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Job).order_by(Job.scraped_at.desc())
+    # Rank by match_score (nulls last) so freshly-matched jobs surface first;
+    # falls back to recency for jobs that haven't been scored yet.
+    query = select(Job).order_by(Job.match_score.desc().nullslast(), Job.scraped_at.desc())
     if portal:
         query = query.where(Job.portal == portal)
     if status:
         query = query.where(Job.status == status)
     if search:
         query = query.where(or_(Job.title.ilike(f"%{search}%"), Job.company.ilike(f"%{search}%")))
+    if min_score is not None:
+        query = query.where(Job.match_score >= min_score)
     query = query.limit(limit).offset(offset)
     result = await db.execute(query)
     return result.scalars().all()
