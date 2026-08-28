@@ -1,6 +1,10 @@
 import json
 import httpx
 
+from app.config import get_settings
+
+settings = get_settings()
+
 JOB_SKILL_EXTRACTION_SYSTEM_PROMPT = """
 Extract required skills, experience, and job details from a job description.
 """
@@ -17,19 +21,15 @@ RESUME_TAILOR_SYSTEM_PROMPT = """
 Tailor a resume to match the target job description while preserving factual accuracy.
 """
 
-OLLAMA_BASE_URL = "http://localhost:11434"
-LLM_MODEL = "llama3"
-EMBEDDING_MODEL = "nomic-embed-text"
-
 
 class LLMService:
     async def generate(self, prompt: str, system_prompt: str = "") -> str:
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/chat",
+                    f"{settings.OLLAMA_BASE_URL}/api/chat",
                     json={
-                        "model": LLM_MODEL,
+                        "model": settings.LLM_MODEL,
                         "messages": [
                             {"role": "system", "content": system_prompt or "You are a helpful assistant."},
                             {"role": "user", "content": prompt},
@@ -71,9 +71,9 @@ class LLMService:
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/chat",
+                    f"{settings.OLLAMA_BASE_URL}/api/chat",
                     json={
-                        "model": LLM_MODEL,
+                        "model": settings.LLM_MODEL,
                         "messages": chat_messages,
                         "stream": False,
                     },
@@ -87,8 +87,8 @@ class LLMService:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
-                    f"{OLLAMA_BASE_URL}/api/embeddings",
-                    json={"model": EMBEDDING_MODEL, "prompt": text},
+                    f"{settings.OLLAMA_BASE_URL}/api/embeddings",
+                    json={"model": settings.EMBEDDING_MODEL, "prompt": text},
                 )
                 data = response.json()
                 return data["embedding"]
