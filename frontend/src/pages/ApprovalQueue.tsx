@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { applicationsApi } from "../api/client";
-import { CheckIcon, XIcon, EditIcon } from "lucide-react";
+import { applicationsApi, extractErrorDetail } from "../api/client";
+import { CheckIcon, XIcon, EditIcon, DownloadIcon } from "lucide-react";
 
 export default function ApprovalQueue() {
   const queryClient = useQueryClient();
@@ -21,6 +21,22 @@ export default function ApprovalQueue() {
   });
 
   const apps = data?.data ?? [];
+
+  const handleDownloadResume = async (id: string) => {
+    try {
+      const res = await applicationsApi.downloadResume(id);
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `updated_resume_${id}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(await extractErrorDetail(err, "Could not download the updated resume."));
+    }
+  };
 
   if (isLoading) return <div className="p-6 text-gray-500">Loading approvals...</div>;
 
@@ -65,9 +81,17 @@ export default function ApprovalQueue() {
 
               {/* Tailored Resume */}
               {app.tailored_resume_path && (
-                <div className="mb-4 p-3 bg-gray-50 rounded-lg">
-                  <p className="text-xs text-gray-500 mb-1">Tailored Resume</p>
-                  <p className="text-sm text-gray-700 font-mono truncate">{app.tailored_resume_path}</p>
+                <div className="mb-4 p-3 bg-gray-50 rounded-lg flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs text-gray-500 mb-1">Tailored Resume</p>
+                    <p className="text-sm text-gray-700 font-mono truncate">{app.tailored_resume_path}</p>
+                  </div>
+                  <button
+                    onClick={() => handleDownloadResume(app.id)}
+                    className="flex items-center gap-1.5 shrink-0 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-sm hover:bg-gray-100"
+                  >
+                    <DownloadIcon className="w-4 h-4" /> Download Updated Resume
+                  </button>
                 </div>
               )}
 

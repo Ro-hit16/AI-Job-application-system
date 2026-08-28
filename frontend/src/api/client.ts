@@ -27,6 +27,24 @@ apiClient.interceptors.response.use(
   }
 );
 
+// Blob error responses (used for file downloads, e.g. downloadResume) come
+// back as a Blob even on a 4xx, since the request was made with
+// responseType: "blob" — axios doesn't parse it as JSON automatically. This
+// unwraps the FastAPI `{ detail: "..." }` body so callers can show the real
+// error message instead of a generic one.
+export async function extractErrorDetail(err: any, fallback: string): Promise<string> {
+  const data = err?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await data.text());
+      return parsed?.detail || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  return data?.detail || fallback;
+}
+
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 export const authApi = {
   login: (email: string, password: string) =>
@@ -65,6 +83,9 @@ export const applicationsApi = {
   get: (id: string) => apiClient.get(`/applications/${id}`),
   approve: (id: string, decision: string, edit_instructions?: string) =>
     apiClient.post(`/applications/${id}/approve`, { decision, edit_instructions }),
+  downloadResume: (id: string) =>
+    apiClient.get(`/applications/${id}/resume/download`, { responseType: "blob" }),
+  markManuallyApplied: (id: string) => apiClient.post(`/applications/${id}/mark-manual-applied`),
 };
 
 // ─── Agents ───────────────────────────────────────────────────────────────────

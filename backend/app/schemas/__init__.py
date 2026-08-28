@@ -133,6 +133,7 @@ class ApplicationOut(BaseModel):
     job_id: Optional[UUID] = None
     resume_id: Optional[UUID] = None
     job: Optional[JobSummary] = None
+    error_message: Optional[str] = None
 
     class Config:
         from_attributes = True
