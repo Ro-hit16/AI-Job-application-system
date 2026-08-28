@@ -311,8 +311,10 @@ This project is licensed under the MIT License.
 
 **Rohit Devkar**
 
-- GitHub: https://github.com/yourusername
-- LinkedIn: https://linkedin.com/in/yourprofile
+- GitHub: https://github.com/Ro-hit16
+- LinkedIn: www.linkedin.com/in/rohit-devkar
+
+
 
 ---
 
