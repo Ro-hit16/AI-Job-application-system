@@ -19,9 +19,11 @@ from app.services.llm_service import (
     RESUME_TAILOR_SYSTEM_PROMPT,
     get_llm_service,
 )
+from app.services.latex_resume import load_resume_template, render_tailored_resume_pdf
 
 logger = get_logger(__name__)
 settings = get_settings()
+RESUME_TEMPLATE = load_resume_template()
 
 
 async def resume_tailor_node(state: AgentState) -> dict:
@@ -47,21 +49,41 @@ async def resume_tailor_node(state: AgentState) -> dict:
                 resume_text = resume.get("raw_text", "")[:3000]
                 edit_instructions = state.get("human_edit_instructions", "")
 
-                # Build tailoring prompt
+                # Build tailoring prompt — LLM must edit CONTENT only,
+                # inside the user's existing LaTeX template, and stay
+                # on one page.
                 tailor_prompt = f"""
+Here is a LaTeX resume template (a single-page Overleaf resume):
+
+{RESUME_TEMPLATE}
+
 Job Title: {job_title}
 Company: {company}
 
 Job Description:
 {job_desc}
 
-Original Resume:
+Original Resume (plain text, for reference on background/details):
 {resume_text}
 
 {f"Additional Instructions: {edit_instructions}" if edit_instructions else ""}
 
-Rewrite the resume to best match this job. Highlight relevant skills and experience.
-Return the complete tailored resume text.
+Rewrite the CONTENT of the LaTeX resume above (professional summary, skills
+emphasis, bullet point wording, ordering of relevant items) to best match
+this job description. Keep relevant, truthful details from the original
+resume where the template already covers them.
+
+STRICT RULES:
+- Output ONLY the complete, valid LaTeX document — from \\documentclass to
+  \\end{{document}}. No commentary, no explanation, no markdown code fences.
+- Keep the exact same LaTeX preamble, packages, formatting commands,
+  section structure, and section order as the template. Do not add new
+  sections, packages, or change formatting commands.
+- The result MUST still fit on a single page — do not add more bullet
+  points or content than the template already has; trim or tighten
+  wording if needed to stay on one page.
+- Only edit the actual resume content (summary text, bullet wording,
+  skill emphasis) to better match the job description.
 """
                 tailored_content = await llm.generate(
                     prompt=tailor_prompt,
@@ -92,10 +114,20 @@ Write a professional, concise cover letter (3 paragraphs max).
                 output_dir = Path(settings.UPLOAD_DIR) / user_id / "tailored"
                 output_dir.mkdir(parents=True, exist_ok=True)
 
-                resume_path = str(output_dir / f"resume_{app_id}.txt")
-                cover_path = str(output_dir / f"cover_{app_id}.txt")
+                pdf_path, compile_log = render_tailored_resume_pdf(
+                    tailored_content, output_dir, app_id
+                )
 
-                Path(resume_path).write_text(tailored_content, encoding="utf-8")
+                if pdf_path is None:
+                    logger.error(
+                        "Resume LaTeX failed to compile; skipping this application "
+                        "rather than saving a broken resume",
+                        extra={"app_id": app_id, "compile_log": compile_log[-1000:]},
+                    )
+                    continue
+
+                resume_path = str(pdf_path)
+                cover_path = str(output_dir / f"cover_{app_id}.txt")
                 Path(cover_path).write_text(cover_letter, encoding="utf-8")
 
                 # Update application record

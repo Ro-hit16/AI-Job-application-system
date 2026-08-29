@@ -25,7 +25,7 @@ Tailor a resume to match the target job description while preserving factual acc
 class LLMService:
     async def generate(self, prompt: str, system_prompt: str = "") -> str:
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     f"{settings.OLLAMA_BASE_URL}/api/chat",
                     json={
