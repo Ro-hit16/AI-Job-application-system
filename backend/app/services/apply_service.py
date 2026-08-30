@@ -276,6 +276,13 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     trace_dir = Path(settings.UPLOAD_DIR) / inp.user_id / "traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
+    # TEMPORARY DIAGNOSTIC
+    import asyncio
+    print(
+        "DIAGNOSTIC: event loop before Playwright launch",
+        "loop_type=", type(asyncio.get_running_loop()).__name__,
+        "policy_type=", type(asyncio.get_event_loop_policy()).__name__,
+    )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(

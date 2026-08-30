@@ -271,7 +271,7 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
             job_context=job.description or "",
         )
         result = await submit_application(apply_input)
-
+        
         await _update_result(
             application_id,
             result.status,
@@ -307,11 +307,14 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
             )
 
     except Exception as e:
-        import traceback
-        full_error = traceback.format_exc()
-        logger.error("Application submission failed", extra={"full_traceback": full_error})
-        await _update_result(application_id, "failed", error=f"Unhandled error: {e!r}")
-
+            import traceback
+            full_error = traceback.format_exc()
+            print("\n=== REAL SUBMISSION FAILURE TRACEBACK ===")
+            print(full_error)
+            print("=== END TRACEBACK ===\n")
+            logger.error("Application submission failed", extra={"full_traceback": full_error})
+            await _update_result(application_id, "failed", error=f"Unhandled error: {e!r}")
+        
 
 async def _update_result(application_id: str, status: str, confirmation: str | None = None,
                           error: str | None = None, screenshot: str | None = None) -> None:
