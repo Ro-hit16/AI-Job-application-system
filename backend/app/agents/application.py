@@ -57,7 +57,11 @@ async def application_node(state: AgentState) -> dict:
 
             except Exception as e:
                 logger.error("Application submission failed", extra={"error": str(e)})
-                app_data["status"] = "failed"
+                # Same manual-intervention flow as any other auto-apply
+                # failure — never a dead-end "failed" status. The tailored
+                # resume (generated earlier by resume_tailor_node, before
+                # this step ever runs) is untouched.
+                app_data["status"] = "needs_manual_review"
                 app_data["error_message"] = str(e)
                 await _update_application_db(app_data)
                 updated_apps.append(app_data)

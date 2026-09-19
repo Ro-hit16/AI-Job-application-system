@@ -92,11 +92,15 @@ def compile_latex_to_pdf(tex_content: str, output_dir: Path, filename_stem: str)
         return None, f"{log_text}\n{e}", tex_path
 
 
-def render_tailored_resume_pdf(tex_content: str, output_dir: Path, app_id: str) -> tuple[Path | None, str]:
+def render_tailored_resume_pdf(tex_content: str, output_dir: Path, app_id: str) -> tuple[Path | None, str, Path]:
     """
     Convenience wrapper used by resume_tailor.py. Returns
-    (pdf_path_or_None, compile_log_text).
+    (pdf_path_or_None, compile_log_text, tex_path).
+
+    tex_path is always returned, whether or not the PDF compiled — the
+    caller must be able to fall back to the raw .tex source so resume
+    generation never comes back empty-handed for a job.
     """
     cleaned = extract_latex(tex_content)
-    pdf_path, log_text, _tex_path = compile_latex_to_pdf(cleaned, output_dir, f"resume_{app_id}")
-    return pdf_path, log_text
+    pdf_path, log_text, tex_path = compile_latex_to_pdf(cleaned, output_dir, f"resume_{app_id}")
+    return pdf_path, log_text, tex_path

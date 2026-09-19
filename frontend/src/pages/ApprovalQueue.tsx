@@ -22,13 +22,14 @@ export default function ApprovalQueue() {
 
   const apps = data?.data ?? [];
 
-  const handleDownloadResume = async (id: string) => {
+  const handleDownloadResume = async (id: string, sourcePath?: string) => {
     try {
       const res = await applicationsApi.downloadResume(id);
+      const ext = sourcePath?.includes(".") ? sourcePath.split(".").pop() : "pdf";
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement("a");
       a.href = url;
-      a.download = `updated_resume_${id}.txt`;
+      a.download = `updated_resume_${id}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -87,7 +88,7 @@ export default function ApprovalQueue() {
                     <p className="text-sm text-gray-700 font-mono truncate">{app.tailored_resume_path}</p>
                   </div>
                   <button
-                    onClick={() => handleDownloadResume(app.id)}
+                    onClick={() => handleDownloadResume(app.id, app.tailored_resume_path)}
                     className="flex items-center gap-1.5 shrink-0 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-sm hover:bg-gray-100"
                   >
                     <DownloadIcon className="w-4 h-4" /> Download Updated Resume

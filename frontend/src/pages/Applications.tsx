@@ -26,6 +26,11 @@ const STATUS_STYLES: Record<
     text: "text-green-700",
     icon: CheckCircleIcon,
   },
+  needs_manual_review: {
+    bg: "bg-amber-100",
+    text: "text-amber-800",
+    icon: UserCogIcon,
+  },
   rejected: { bg: "bg-red-100", text: "text-red-700", icon: XCircleIcon },
   failed: { bg: "bg-red-100", text: "text-red-700", icon: AlertCircleIcon },
 };
@@ -51,13 +56,14 @@ export default function Applications() {
 
   const apps: any[] = data?.data ?? [];
 
-  const handleDownloadResume = async (id: string) => {
+  const handleDownloadResume = async (id: string, sourcePath?: string) => {
     try {
       const res = await applicationsApi.downloadResume(id);
+      const ext = sourcePath?.includes(".") ? sourcePath.split(".").pop() : "pdf";
       const url = window.URL.createObjectURL(new Blob([res.data]));
       const a = document.createElement("a");
       a.href = url;
-      a.download = `updated_resume_${id}.txt`;
+      a.download = `updated_resume_${id}.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -74,7 +80,7 @@ export default function Applications() {
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Applications</h1>
 
       <div className="flex gap-2 mb-6">
-        {["", "pending_approval", "submitted", "rejected", "failed"].map(
+        {["", "pending_approval", "needs_manual_review", "submitted", "rejected", "failed"].map(
           (s) => (
             <button
               key={s}
@@ -163,7 +169,7 @@ export default function Applications() {
                 <div className="flex gap-2 mt-3">
                   {app.tailored_resume_path && (
                     <button
-                      onClick={() => handleDownloadResume(app.id)}
+                      onClick={() => handleDownloadResume(app.id, app.tailored_resume_path)}
                       className="flex items-center gap-1.5 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-xs hover:bg-gray-100"
                     >
                       <DownloadIcon className="w-3.5 h-3.5" /> Download Updated
@@ -183,10 +189,13 @@ export default function Applications() {
                   )}
                 </div>
 
-                {interveneId === app.id && (
+                {(interveneId === app.id ||
+                  app.status === "needs_manual_review") && (
                   <div className="mt-3 p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm">
                     <p className="font-medium text-amber-800 mb-1">
-                      Manual review
+                      {app.status === "needs_manual_review"
+                        ? "Auto-apply stopped — needs manual review"
+                        : "Manual review"}
                     </p>
                     <p className="text-amber-700 mb-2">
                       {app.error_message ||
@@ -207,7 +216,7 @@ export default function Applications() {
                     <div className="flex gap-2 mt-2">
                       {app.tailored_resume_path && (
                         <button
-                          onClick={() => handleDownloadResume(app.id)}
+                          onClick={() => handleDownloadResume(app.id, app.tailored_resume_path)}
                           className="flex items-center gap-1.5 bg-white border border-amber-300 text-amber-800 px-3 py-1.5 rounded-lg text-xs hover:bg-amber-100"
                         >
                           <DownloadIcon className="w-3.5 h-3.5" /> Download

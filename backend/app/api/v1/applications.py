@@ -115,11 +115,11 @@ async def download_updated_resume(
     if not path.exists():
         raise HTTPException(status_code=404, detail="Updated resume file is missing on the server")
 
-    suffix = path.suffix or ".txt"
+    suffix = path.suffix or ".pdf"
     return FileResponse(
         path=str(path),
         filename=f"updated_resume_{application_id}{suffix}",
-        media_type="text/plain" if suffix == ".txt" else "application/octet-stream",
+        media_type="application/pdf" if suffix == ".pdf" else "application/octet-stream",
     )
 
 
@@ -243,7 +243,7 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
             resume = resume_result.scalar_one_or_none()
 
         if not job:
-            await _update_result(application_id, "failed", error="Job not found in database")
+            await _update_result(application_id, "needs_manual_review", error="Job not found in database")
             return
 
         contact_info = resume.contact_info if resume and resume.contact_info else {}
@@ -313,7 +313,12 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
             print(full_error)
             print("=== END TRACEBACK ===\n")
             logger.error("Application submission failed", extra={"full_traceback": full_error})
-            await _update_result(application_id, "failed", error=f"Unhandled error: {e!r}")
+            # Land in the same manual-intervention flow as any other
+            # auto-apply failure, rather than a separate dead-end "failed"
+            # status — the tailored resume already generated for this
+            # application (see resume_tailor_node, which runs before this
+            # step and never gets touched by it) is untouched either way.
+            await _update_result(application_id, "needs_manual_review", error=f"Unhandled error: {e!r}")
         
 
 async def _update_result(application_id: str, status: str, confirmation: str | None = None,

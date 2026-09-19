@@ -114,19 +114,27 @@ Write a professional, concise cover letter (3 paragraphs max).
                 output_dir = Path(settings.UPLOAD_DIR) / user_id / "tailored"
                 output_dir.mkdir(parents=True, exist_ok=True)
 
-                pdf_path, compile_log = render_tailored_resume_pdf(
+                pdf_path, compile_log, tex_path = render_tailored_resume_pdf(
                     tailored_content, output_dir, app_id
                 )
 
-                if pdf_path is None:
+                if pdf_path is not None:
+                    resume_path = str(pdf_path)
+                else:
+                    # PDF compilation failed (e.g. a LaTeX toolchain issue,
+                    # or the LLM produced content pdflatex choked on). The
+                    # tailored .tex source was still saved — use it as the
+                    # resume for this application rather than dropping the
+                    # job from the pipeline. Resume generation, and the
+                    # application it feeds, must never disappear just
+                    # because the PDF step failed.
+                    resume_path = str(tex_path)
                     logger.error(
-                        "Resume LaTeX failed to compile; skipping this application "
-                        "rather than saving a broken resume",
+                        "Resume PDF failed to compile; falling back to the "
+                        ".tex source so this application still proceeds",
                         extra={"app_id": app_id, "compile_log": compile_log[-1000:]},
                     )
-                    continue
 
-                resume_path = str(pdf_path)
                 cover_path = str(output_dir / f"cover_{app_id}.txt")
                 Path(cover_path).write_text(cover_letter, encoding="utf-8")
 
