@@ -63,7 +63,18 @@ export const resumesApi = {
     const fd = new FormData();
     fd.append("file", file);
     return apiClient.post(`/resumes/upload?set_primary=${setPrimary}`, fd, {
-      headers: { "Content-Type": "multipart/form-data" },
+      // The apiClient instance defaults to Content-Type: application/json
+      // for every request. Overriding it to undefined here is required —
+      // not just omitting the header — otherwise that json default wins
+      // and axios JSON-stringifies the FormData instead of sending the
+      // file. With it explicitly undefined, axios drops the header
+      // entirely and the browser sets its own Content-Type for the
+      // FormData body, including the boundary=... parameter the backend
+      // needs to parse the multipart request. (Setting it to the literal
+      // string "multipart/form-data" — the previous code — is what broke
+      // this: that string has no boundary, and an explicit header is never
+      // overridden by the browser, so the server could never find the file.)
+      headers: { "Content-Type": undefined },
     });
   },
   delete: (id: string) => apiClient.delete(`/resumes/${id}`),

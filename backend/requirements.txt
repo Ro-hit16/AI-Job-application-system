@@ -17,6 +17,14 @@ pydantic[email]==2.9.2
 # ─── Security ─────────────────────────────────────────────────────────────────
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+# Pinned explicitly: passlib 1.7.4 detects its bcrypt backend via
+# bcrypt.__about__.__version__, which bcrypt>=4.1 removed. Without this pin,
+# a fresh install pulls the latest bcrypt, passlib's version probe silently
+# breaks (logged as "module 'bcrypt' has no attribute '__about__'"), and
+# every hash() call then fails with "password cannot be longer than 72
+# bytes" even for short passwords. 4.0.1 is the newest release that still
+# has __about__ and is a known-good pairing with passlib 1.7.4.
+bcrypt==4.0.1
 
 # ─── LangGraph / LangChain ────────────────────────────────────────────────────
 # ✅ Free ✅ Open Source ✅ Self-hosted (via Ollama)

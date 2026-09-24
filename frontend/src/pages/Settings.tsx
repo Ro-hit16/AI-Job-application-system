@@ -1,7 +1,7 @@
 // src/pages/Settings.tsx
 import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { agentsApi, resumesApi } from "../api/client";
+import { agentsApi, resumesApi, extractErrorDetail } from "../api/client";
 import { UploadIcon, PlayIcon, TrashIcon } from "lucide-react";
 
 export default function Settings() {
@@ -9,6 +9,7 @@ export default function Settings() {
   const queryClient = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [runStatus, setRunStatus] = useState<string>("");
+  const [uploadError, setUploadError] = useState<string>("");
 
   const { data: resumesData } = useQuery({
     queryKey: ["resumes"],
@@ -18,7 +19,13 @@ export default function Settings() {
 
   const uploadMutation = useMutation({
     mutationFn: (file: File) => resumesApi.upload(file),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["resumes"] }),
+    onSuccess: () => {
+      setUploadError("");
+      queryClient.invalidateQueries({ queryKey: ["resumes"] });
+    },
+    onError: async (err) => {
+      setUploadError(await extractErrorDetail(err, "Upload failed. Please try again."));
+    },
   });
 
   const deleteMutation = useMutation({
@@ -72,7 +79,13 @@ export default function Settings() {
           type="file"
           accept=".pdf"
           className="hidden"
-          onChange={(e) => e.target.files?.[0] && uploadMutation.mutate(e.target.files[0])}
+          onChange={(e) => {
+            if (e.target.files?.[0]) {
+              setUploadError("");
+              uploadMutation.mutate(e.target.files[0]);
+            }
+            e.target.value = "";
+          }}
         />
         <button
           onClick={() => fileRef.current?.click()}
@@ -82,6 +95,9 @@ export default function Settings() {
           <UploadIcon className="w-4 h-4" />
           {uploadMutation.isPending ? "Uploading..." : "Upload PDF Resume"}
         </button>
+        {uploadError && (
+          <p className="text-xs text-red-500 mt-2">{uploadError}</p>
+        )}
       </div>
 
       {/* Run Pipeline */}
