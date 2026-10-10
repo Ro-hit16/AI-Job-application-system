@@ -153,7 +153,13 @@ Write a professional, concise cover letter (3 paragraphs max).
                 )
 
             except Exception as e:
-                logger.error("Tailoring failed for app", extra={"error": str(e)})
+                logger.exception(
+                    "Tailoring failed for app",
+                    extra={
+                        "app_id": app_data.get("application_id"),
+                        "error": str(e),
+                    },
+                )
                 continue
 
         return {

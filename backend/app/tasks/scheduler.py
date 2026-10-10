@@ -1,6 +1,8 @@
+﻿"""
+tasks/scheduler.py - APScheduler periodic job scraping
 """
-tasks/scheduler.py — APScheduler periodic job scraping
-"""
+
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -26,20 +28,35 @@ async def scheduled_pipeline_run():
 
         async with get_db_context() as db:
             users = await db.execute(select(User).where(User.is_active == True))
+
             for user in users.scalars().all():
                 resumes = await db.execute(
-                    select(Resume).where(Resume.user_id == user.id, Resume.is_primary == True, Resume.is_parsed == True)
+                    select(Resume).where(
+                        Resume.user_id == user.id,
+                        Resume.is_primary == True,
+                        Resume.is_parsed == True,
+                    )
                 )
+
                 resume = resumes.scalar_one_or_none()
+
                 if resume:
                     await run_agent_pipeline(
                         user_id=str(user.id),
                         resume_id=str(resume.id),
                         triggered_by="scheduler",
                     )
-                    logger.info("Scheduled run complete", extra={"user_id": str(user.id)})
+
+                    logger.info(
+                        "Scheduled run complete",
+                        extra={"user_id": str(user.id)},
+                    )
+
     except Exception as e:
-        logger.error("Scheduled run failed", extra={"error": str(e)})
+        logger.error(
+            "Scheduled run failed",
+            extra={"error": str(e)},
+        )
 
 
 def start_scheduler():
@@ -50,9 +67,15 @@ def start_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+        next_run_time=datetime.now(),
     )
+
     scheduler.start()
-    logger.info("Scheduler started", extra={"interval_minutes": settings.SCRAPE_INTERVAL_MINUTES})
+
+    logger.info(
+        "Scheduler started",
+        extra={"interval_minutes": settings.SCRAPE_INTERVAL_MINUTES},
+    )
 
 
 def stop_scheduler():

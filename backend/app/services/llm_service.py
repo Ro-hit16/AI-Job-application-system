@@ -23,6 +23,7 @@ Tailor a resume to match the target job description while preserving factual acc
 
 
 class LLMService:
+    
     async def generate(self, prompt: str, system_prompt: str = "") -> str:
         try:
             async with httpx.AsyncClient(timeout=300.0) as client:
@@ -31,35 +32,89 @@ class LLMService:
                     json={
                         "model": settings.LLM_MODEL,
                         "messages": [
-                            {"role": "system", "content": system_prompt or "You are a helpful assistant."},
+                            {
+                                "role": "system",
+                                "content": system_prompt or "You are a helpful assistant.",
+                            },
                             {"role": "user", "content": prompt},
                         ],
                         "stream": False,
+                        "options": {
+                            "num_predict": 1200,
+                        },
                     },
                 )
+                response.raise_for_status()
                 data = response.json()
-                return data["message"]["content"]
-        except Exception as e:
-            return f"LLM error: {e}"
+                content = data.get("message", {}).get("content")
 
+                if not isinstance(content, str) or not content.strip():
+                    raise RuntimeError("Ollama returned an empty response")
+
+                if content.strip().startswith("LLM error:"):
+                    raise RuntimeError(content.strip())
+
+                return content
+
+        except Exception as e:
+           raise RuntimeError(
+                f"LLM generation failed: {type(e).__name__}: {str(e) or repr(e)}"
+            ) from e
+
+   
     async def generate_structured(
         self,
         prompt: str,
         system_prompt: str,
         output_schema: dict,
     ) -> dict:
-        system = f"{system_prompt}\nRespond ONLY with valid JSON. No markdown, no explanation, no code blocks."
+        system = (
+            f"{system_prompt}\n"
+            "Respond ONLY with valid JSON. No markdown, no explanation, no code blocks."
+        )
         text = await self.generate(prompt, system)
+
+        text = text.strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1].strip()
+            if text.startswith("json"):
+                text = text[4:].strip()
+
         try:
-            # Strip markdown code blocks if present
-            text = text.strip()
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            return json.loads(text.strip())
-        except Exception:
-            return output_schema
+            result = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"LLM returned invalid JSON: {e}"
+            ) from e
+
+        if not isinstance(result, dict):
+            raise RuntimeError("LLM structured response must be a JSON object")
+
+        return result
+
+
+    async def embed(self, text: str) -> list[float]:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    f"{settings.OLLAMA_BASE_URL}/api/embeddings",
+                    json={
+                        "model": settings.EMBEDDING_MODEL,
+                        "prompt": text,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+                embedding = data.get("embedding")
+
+                if not isinstance(embedding, list) or not embedding:
+                    raise RuntimeError("Ollama returned an empty embedding")
+
+                return embedding
+
+        except Exception as e:
+            raise RuntimeError(f"LLM embedding failed: {e}") from e
+
 
     async def chat(self, messages: list[dict], system_prompt: str = "") -> str:
         """Multi-turn conversational chat for interview use."""

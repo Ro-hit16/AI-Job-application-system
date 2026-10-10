@@ -37,8 +37,19 @@ def route_after_resume_analysis(state: AgentState) -> Literal["job_match", "anal
 
 
 def route_after_job_match(state: AgentState) -> Literal["resume_tailor", "analytics"]:
-    if state.get("should_stop") or not state.get("jobs_above_threshold"):
+    applications = state.get("applications_to_process") or []
+
+    if state.get("should_stop") or not applications:
         return "analytics"
+
+    logger.info(
+        "Routing to resume_tailor",
+        extra={
+            "applications_count": len(applications),
+            "run_id": state.get("run_id", "unknown"),
+        },
+    )
+
     return "resume_tailor"
 
 
