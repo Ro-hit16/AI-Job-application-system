@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from sys import path
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -111,15 +112,11 @@ async def download_updated_resume(
     if not app.tailored_resume_path:
         raise HTTPException(status_code=404, detail="No updated resume has been generated for this application yet")
 
-    path = Path(app.tailored_resume_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Updated resume file is missing on the server")
-
-    suffix = path.suffix or ".pdf"
+    path, media = _resolve_resume_file(app.tailored_resume_path)
     return FileResponse(
         path=str(path),
-        filename=f"updated_resume_{application_id}{suffix}",
-        media_type="application/pdf" if suffix == ".pdf" else "application/octet-stream",
+        filename=f"updated_resume_{application_id}{path.suffix.lower()}",
+        media_type=media,
     )
 
 
@@ -157,6 +154,33 @@ async def approve_application(
         await db.commit()
         return {"status": "rejected", "message": "Application rejected."}
 
+_RESUME_MEDIA_TYPES = {".pdf": "application/pdf", ".tex": "application/x-tex"}
+
+
+def _resolve_resume_file(raw_path: str | None) -> tuple[Path, str]:
+    if not raw_path:
+        raise HTTPException(404, "No updated resume has been generated for this application yet")
+    path = Path(raw_path)
+    if not path.is_file():
+        raise HTTPException(404, "Updated resume file is missing on the server; regenerate it")
+    suffix = path.suffix.lower()
+    media = _RESUME_MEDIA_TYPES.get(suffix)
+    if media is None:
+        raise HTTPException(415, f"Unsupported resume file type '{suffix}'")
+    if path.stat().st_size == 0:
+        raise HTTPException(409, "Saved resume file is empty; regenerate it")
+    if suffix == ".pdf":
+        with path.open("rb") as f:
+            if f.read(5) != b"%PDF-":
+                raise HTTPException(409, "Saved PDF is corrupt; regenerate it")
+    else:
+        try:
+            problem = validate_tex(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            problem = "file unreadable"
+        if problem:
+            raise HTTPException(409, f"Saved .tex is not a valid resume ({problem}); regenerate it")
+    return path, media
 
 @router.post("/approve-all", response_model=dict)
 async def approve_all_pending(
