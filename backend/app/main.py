@@ -20,6 +20,22 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting application")
+    import socket
+    
+    host = settings.DATABASE_URL.split("@")[-1].split("/")[0].split(":")[0]
+    
+    try:
+        addresses = socket.getaddrinfo(
+            host, 5432, type=socket.SOCK_STREAM
+        )
+        for address in addresses:
+            logger.info(
+                "Neon DNS result: family=%s address=%s",
+                address[0],
+                address[4][0],
+            )
+    except Exception:
+        logger.exception("Neon DNS resolution failed")
     if settings.ENVIRONMENT == "development":
         await create_tables()
     db_health = await check_database_health()

@@ -20,9 +20,41 @@ logger = get_logger(__name__)
 TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "templates" / "resume_template.tex"
 
 
-def load_resume_template() -> str:
-    """Read the user's fixed Overleaf resume template."""
+def get_user_template_path(user_id: str | uuid.UUID) -> Path:
+    from app.config import get_settings
+    settings = get_settings()
+    return Path(settings.UPLOAD_DIR) / str(user_id) / "template.tex"
+
+
+def load_resume_template(user_id: str | uuid.UUID | None = None) -> str:
+    """Read the active resume template: user-customized if exists, else default Overleaf template."""
+    if user_id:
+        user_tpl = get_user_template_path(user_id)
+        if user_tpl.is_file():
+            try:
+                content = user_tpl.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+            except Exception:
+                pass
     return TEMPLATE_PATH.read_text(encoding="utf-8")
+
+
+def save_user_resume_template(user_id: str | uuid.UUID, tex_content: str) -> Path:
+    """Save user-customized resume template."""
+    user_tpl = get_user_template_path(user_id)
+    user_tpl.parent.mkdir(parents=True, exist_ok=True)
+    user_tpl.write_text(tex_content, encoding="utf-8")
+    return user_tpl
+
+
+def reset_user_resume_template(user_id: str | uuid.UUID) -> bool:
+    """Reset to default master template."""
+    user_tpl = get_user_template_path(user_id)
+    if user_tpl.is_file():
+        user_tpl.unlink()
+        return True
+    return False
 
 
 def extract_latex(llm_output: str) -> str:
@@ -97,10 +129,32 @@ def render_tailored_resume_pdf(tex_content: str, output_dir: Path, app_id: str) 
     Convenience wrapper used by resume_tailor.py. Returns
     (pdf_path_or_None, compile_log_text, tex_path).
 
-    tex_path is always returned, whether or not the PDF compiled — the
-    caller must be able to fall back to the raw .tex source so resume
-    generation never comes back empty-handed for a job.
+    Tries pdflatex first; if it is not installed or fails, automatically
+    falls back to the ReportLab-based PDF generator so users always get
+    a proper .pdf file instead of a raw .tex fallback.
+
+    tex_path is always returned so callers have the source available.
     """
     cleaned = extract_latex(tex_content)
-    pdf_path, log_text, tex_path = compile_latex_to_pdf(cleaned, output_dir, f"resume_{app_id}")
-    return pdf_path, log_text, tex_path
+    stem = f"resume_{app_id}"
+    pdf_path, log_text, tex_path = compile_latex_to_pdf(cleaned, output_dir, stem)
+
+    if pdf_path is not None:
+        return pdf_path, log_text, tex_path
+
+    # pdflatex unavailable or failed — try ReportLab
+    logger.warning(
+        "pdflatex failed or not installed; trying ReportLab fallback",
+        extra={"app_id": app_id, "pdflatex_log": (log_text or "")[-500:]},
+    )
+    try:
+        from app.services.resume_pdf_gen import generate_resume_pdf
+        rl_pdf, rl_log = generate_resume_pdf(cleaned, output_dir, stem)
+        if rl_pdf is not None:
+            logger.info("ReportLab PDF generated successfully", extra={"app_id": app_id})
+            return rl_pdf, rl_log, tex_path
+        logger.error("ReportLab PDF generation also failed", extra={"app_id": app_id, "log": rl_log})
+    except Exception as e:
+        logger.error("ReportLab fallback raised an exception", extra={"app_id": app_id, "error": str(e)})
+
+    return None, log_text, tex_path

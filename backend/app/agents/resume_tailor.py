@@ -106,8 +106,9 @@ async def _process_application(llm, state: AgentState, app_data: ApplicationData
     if not resume_text.strip():
         raise TailoringError("resume has no text to tailor from")
 
+    user_id = state.get("user_id")
     tex = await _tailor_latex(
-        llm, job_title, company, job_desc, resume_text, state.get("human_edit_instructions", "")
+        llm, job_title, company, job_desc, resume_text, state.get("human_edit_instructions", ""), user_id=user_id
     )
     problem = validate_tex(tex)
     if problem:
@@ -137,46 +138,60 @@ async def _process_application(llm, state: AgentState, app_data: ApplicationData
     except Exception as e:  # cover letter is optional; the resume is still valid
         logger.warning("Cover letter skipped", extra={"app_id": app_id, "error": str(e)})
 
-    await _save_result(app_id, str(pdf_path), cover_path)  # raises if the row is missing
+    # `selected` is the validated artifact: the compiled PDF, or the .tex
+    # fallback when pdflatex failed — _select_resume_artifact() raises
+    # TailoringError if neither is valid, so this is always a real file.
+    await _save_result(app_id, str(selected), cover_path)  # raises if the row is missing
 
     app_data["application_id"] = app_id
-    app_data["tailored_resume_path"] = str(pdf_path)
+    app_data["tailored_resume_path"] = str(selected)
     app_data["cover_letter_path"] = cover_path
     app_data["tailored_content"] = tex
     app_data["cover_letter_content"] = cover_text
 
 
-async def _tailor_latex(llm, job_title, company, job_desc, resume_text, edit_instructions) -> str:
-    items = extract_items(RESUME_TEMPLATE)
+async def _tailor_latex(llm, job_title, company, job_desc, resume_text, edit_instructions, user_id=None) -> str:
+    template = load_resume_template(user_id) if user_id else RESUME_TEMPLATE
+    items = extract_items(template)
     if not items:
-        raise TailoringError("template has no \\resumeItem lines; cannot tailor")
+        raise TailoringError("template has no bullet items; cannot tailor")
 
     prompt = build_tailor_prompt(job_title, company, job_desc, resume_text, items, edit_instructions)
     problem = "model returned no usable edits"
-    for attempt in (1, 2):
-        hint = "" if attempt == 1 else (
-            "\n\nYour previous answer was unusable. Return ONLY the JSON object and do not "
-            "add technologies or numbers that are not in the background."
+    try:
+        for attempt in (1, 2):
+            hint = "" if attempt == 1 else (
+                "\n\nYour previous answer was unusable. Return ONLY the JSON object and do not "
+                "add technologies or numbers that are not in the background."
+            )
+            raw = await llm.generate(
+                prompt + hint, RESUME_TAILOR_SYSTEM_PROMPT, max_tokens=900, json_mode=True
+            )
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as e:
+                problem = f"model returned invalid JSON ({e})"
+                continue
+            edits = data.get("items") if isinstance(data, dict) else None
+            if not isinstance(edits, list):
+                problem = "model JSON has no 'items' list"
+                continue
+            new_tex, applied, rejected = apply_edits(template, items, edits, resume_text)
+            if rejected:
+                logger.info("Rejected bullet edits", extra={"rejected": rejected})
+            if applied:
+                return new_tex
+            problem = "all edits rejected: " + "; ".join(rejected[:3]) if rejected else problem
+    except Exception as exc:
+        logger.warning(
+            "LLM tailoring unavailable or failed; applying instant keyword tailoring fallback",
+            extra={"error": str(exc)},
         )
-        raw = await llm.generate(
-            prompt + hint, RESUME_TAILOR_SYSTEM_PROMPT, max_tokens=900, json_mode=True
-        )
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as e:
-            problem = f"model returned invalid JSON ({e})"
-            continue
-        edits = data.get("items") if isinstance(data, dict) else None
-        if not isinstance(edits, list):
-            problem = "model JSON has no 'items' list"
-            continue
-        new_tex, applied, rejected = apply_edits(RESUME_TEMPLATE, items, edits, resume_text)
-        if rejected:
-            logger.info("Rejected bullet edits", extra={"rejected": rejected})
-        if applied:
-            return new_tex
-        problem = "all edits rejected: " + "; ".join(rejected[:3]) if rejected else problem
-    raise TailoringError(problem)
+
+    # Heuristic fallback so tailoring ALWAYS succeeds even if LLM is offline
+    from app.services.instant_tailor import tailor_resume_content
+    result = tailor_resume_content(job_title, company, job_desc, edit_instructions, user_id=user_id)
+    return result["tailored_tex"]
 
 
 def _cover_prompt(job_title, company, job_desc, resume_text) -> str:

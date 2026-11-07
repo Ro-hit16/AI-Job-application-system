@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from sys import path
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +17,7 @@ from app.models.resume import Resume
 from app.schemas import ApplicationOut, ApprovalAction
 from app.core.logging import get_logger
 from app.services.apply_service import ApplyInput, resolve_contact_email, submit_application
+from app.services.resume_edit import validate_pdf, validate_tex
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 logger = get_logger(__name__)
@@ -109,15 +109,96 @@ async def download_updated_resume(
     app = result.scalar_one_or_none()
     if not app:
         raise HTTPException(status_code=404, detail="Application not found")
-    if not app.tailored_resume_path:
-        raise HTTPException(status_code=404, detail="No updated resume has been generated for this application yet")
+    company = ""
+    if app.job_id:
+        from app.models.job import Job
+        job_res = await db.execute(select(Job).where(Job.id == app.job_id))
+        job = job_res.scalar_one_or_none()
+        if job and job.company:
+            company = job.company
 
-    path, media = _resolve_resume_file(app.tailored_resume_path)
-    return FileResponse(
-        path=str(path),
-        filename=f"updated_resume_{application_id}{path.suffix.lower()}",
-        media_type=media,
+    from app.services.instant_tailor import format_resume_download_filename
+    clean_resume_name = f"{format_resume_download_filename(candidate_name='Rohit Devkar', company=company)}.pdf"
+
+    try:
+        from app.services.instant_tailor import auto_ensure_application_pdf
+        path, media = await auto_ensure_application_pdf(application_id, user_id, db)
+        return FileResponse(
+            path=str(path),
+            filename=clean_resume_name,
+            media_type="application/pdf",
+        )
+    except Exception as e:
+        logger.error("Auto resume PDF generation failed", extra={"error": str(e), "app_id": str(application_id)})
+        if app.tailored_resume_path:
+            path, media = _resolve_resume_file(app.tailored_resume_path)
+            return FileResponse(
+                path=str(path),
+                filename=clean_resume_name,
+                media_type="application/pdf",
+            )
+        raise HTTPException(status_code=500, detail=f"Failed to generate resume PDF: {e}")
+
+
+@router.post("/{application_id}/resume/regenerate-pdf", response_model=dict)
+async def regenerate_resume_pdf(
+    application_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-generate a PDF from the saved .tex file using ReportLab.
+    
+    Useful when pdflatex was unavailable during tailoring, or when the stored
+    file is a .tex fallback. After calling this, the download endpoint will
+    return a proper .pdf file.
+    """
+    result = await db.execute(
+        select(Application).where(Application.id == application_id, Application.user_id == user_id)
     )
+    app = result.scalar_one_or_none()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    # Find the .tex file (either the stored path or its .tex sibling)
+    tex_path: Path | None = None
+    if app.tailored_resume_path:
+        p = Path(app.tailored_resume_path)
+        if p.suffix.lower() == ".tex" and p.is_file():
+            tex_path = p
+        elif p.suffix.lower() in (".pdf", ".txt"):
+            candidate = p.with_suffix(".tex")
+            if candidate.is_file():
+                tex_path = candidate
+
+    if tex_path is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No .tex source file found — re-run the agent pipeline to regenerate the resume"
+        )
+
+    try:
+        tex_content = tex_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise HTTPException(status_code=500, detail=f"Could not read .tex source: {e}")
+
+    from app.services.resume_pdf_gen import generate_resume_pdf
+    pdf_path, log = generate_resume_pdf(tex_content, tex_path.parent, tex_path.stem)
+    if pdf_path is None:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {log}")
+
+    # Update the stored path to the new PDF
+    app.tailored_resume_path = str(pdf_path)
+    if app.error_message and "no file to download" in app.error_message:
+        app.error_message = None
+    await db.commit()
+
+    return {
+        "message": "PDF regenerated successfully",
+        "path": str(pdf_path),
+        "size_bytes": pdf_path.stat().st_size,
+    }
+
+
 
 
 @router.post("/{application_id}/approve", response_model=dict)
@@ -163,24 +244,76 @@ def _resolve_resume_file(raw_path: str | None) -> tuple[Path, str]:
     path = Path(raw_path)
     if not path.is_file():
         raise HTTPException(404, "Updated resume file is missing on the server; regenerate it")
-    suffix = path.suffix.lower()
-    media = _RESUME_MEDIA_TYPES.get(suffix)
-    if media is None:
-        raise HTTPException(415, f"Unsupported resume file type '{suffix}'")
     if path.stat().st_size == 0:
         raise HTTPException(409, "Saved resume file is empty; regenerate it")
-    if suffix == ".pdf":
-        with path.open("rb") as f:
-            if f.read(5) != b"%PDF-":
-                raise HTTPException(409, "Saved PDF is corrupt; regenerate it")
-    else:
+
+    suffix = path.suffix.lower()
+
+    # ── .txt fallback: could be LaTeX saved with wrong extension ─────────
+    if suffix == ".txt":
         try:
-            problem = validate_tex(path.read_text(encoding="utf-8"))
+            with path.open("rb") as f:
+                header = f.read(5)
+            if header == b"%PDF-":
+                pdf_err = validate_pdf(path)
+                if pdf_err is None:
+                    recovered = path.with_suffix(".pdf")
+                    recovered.write_bytes(path.read_bytes())
+                    return recovered, "application/pdf"
+        except OSError:
+            pass
+        try:
+            content = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
-            problem = "file unreadable"
+            content = ""
+        problem = validate_tex(content)
         if problem:
-            raise HTTPException(409, f"Saved .tex is not a valid resume ({problem}); regenerate it")
-    return path, media
+            raise HTTPException(409, f"Saved resume is not a valid resume ({problem}); regenerate it")
+        # Valid LaTeX stored as .txt → generate PDF via ReportLab
+        pdf_candidate = path.with_suffix(".pdf")
+        if pdf_candidate.is_file() and validate_pdf(pdf_candidate) is None:
+            return pdf_candidate, "application/pdf"
+        return _generate_pdf_from_tex(content, path.with_suffix(".pdf"))
+
+    if suffix not in _RESUME_MEDIA_TYPES:
+        raise HTTPException(415, f"Unsupported resume file type '{suffix}'")
+
+    if suffix == ".pdf":
+        pdf_err = validate_pdf(path)
+        if pdf_err:
+            raise HTTPException(409, f"Saved PDF is corrupt ({pdf_err}); regenerate it")
+        return path, "application/pdf"
+
+    # ── .tex: generate PDF via ReportLab ─────────────────────────────────
+    try:
+        content = path.read_text(encoding="utf-8")
+        problem = validate_tex(content)
+    except (OSError, UnicodeDecodeError):
+        problem = "file unreadable"
+        content = ""
+    if problem:
+        raise HTTPException(409, f"Saved .tex is not a valid resume ({problem}); regenerate it")
+
+    # If a valid PDF already exists alongside, use it
+    pdf_candidate = path.with_suffix(".pdf")
+    if pdf_candidate.is_file() and validate_pdf(pdf_candidate) is None:
+        return pdf_candidate, "application/pdf"
+
+    # Generate PDF on-the-fly and cache it next to the .tex
+    return _generate_pdf_from_tex(content, pdf_candidate)
+
+
+def _generate_pdf_from_tex(tex_content: str, pdf_path: Path) -> tuple[Path, str]:
+    """Generate a PDF from LaTeX source using ReportLab. Returns (pdf_path, media_type)."""
+    try:
+        from app.services.resume_pdf_gen import generate_resume_pdf
+        out, log = generate_resume_pdf(tex_content, pdf_path.parent, pdf_path.stem)
+        if out is not None and validate_pdf(out) is None:
+            return out, "application/pdf"
+        logger.error("ReportLab generation failed in resolver", extra={"log": log})
+    except Exception as e:
+        logger.error("ReportLab resolver exception", extra={"error": str(e)})
+    raise HTTPException(500, "Could not generate PDF from resume source; try the /regenerate-pdf endpoint")
 
 @router.post("/approve-all", response_model=dict)
 async def approve_all_pending(

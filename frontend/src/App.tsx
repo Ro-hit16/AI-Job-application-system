@@ -11,7 +11,8 @@ import { useAuthStore } from "./store/auth";
 import { authApi, notificationsApi } from "./api/client";
 import { useState } from "react";
 import Interview from "./pages/Interview";
-import { BrainIcon } from "lucide-react";
+import InstantTailor from "./pages/InstantTailor";
+import { BrainIcon, Wand2Icon } from "lucide-react";
 
 const qc = new QueryClient({
   defaultOptions: {
@@ -241,6 +242,11 @@ function Layout({
       label: "Jobs",
     },
     {
+      to: "/tailor",
+      icon: Wand2Icon,
+      label: "Tailor Resume",
+    },
+    {
       to: "/applications",
       icon: ListIcon,
       label: "Applications",
@@ -364,6 +370,11 @@ export default function App() {
                     <Route
                       path="/jobs"
                       element={<Jobs />}
+                    />
+
+                    <Route
+                      path="/tailor"
+                      element={<InstantTailor />}
                     />
 
                     <Route

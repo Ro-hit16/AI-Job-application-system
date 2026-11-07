@@ -198,39 +198,39 @@ class LLMService:
         except Exception as e:
             raise LLMError(f"LLM embedding failed: {type(e).__name__}: {e or repr(e)}") from e
 
-        async def chat(self, messages: list[dict], system_prompt: str = "") -> str:
-            """Multi-turn chat. Raises LLMError on any failure (never returns error text)."""
-            chat_messages = []
-            if system_prompt:
-                chat_messages.append({"role": "system", "content": system_prompt})
-            chat_messages.extend(messages)
-            try:
-                async with httpx.AsyncClient(
-                    timeout=_timeout(read=120.0), transport=self._transport
-                ) as client:
-                    response = await client.post(
-                        f"{settings.OLLAMA_BASE_URL}/api/chat",
-                        json={
-                            "model": settings.LLM_MODEL,
-                            "messages": chat_messages,
-                            "stream": False,
-                            "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
-                        },
-                    )
-                    response.raise_for_status()
-                    data = response.json()
-            except Exception as e:
-                raise LLMError(f"LLM chat failed: {type(e).__name__}: {str(e) or repr(e)}") from e
-            if isinstance(data, dict) and "error" in data:
-                raise LLMError(f"Ollama error: {data['error']}")
-            content = (data.get("message") or {}).get("content") if isinstance(data, dict) else None
-            if not isinstance(content, str) or not content.strip():
-                raise LLMError("LLM chat returned an empty response")
-            return content
+    async def chat(self, messages: list[dict], system_prompt: str = "") -> str:
+        """Multi-turn chat. Raises LLMError on any failure (never returns error text)."""
+        chat_messages = []
+        if system_prompt:
+            chat_messages.append({"role": "system", "content": system_prompt})
+        chat_messages.extend(messages)
+        try:
+            async with httpx.AsyncClient(
+                timeout=_timeout(read=120.0), transport=self._transport
+            ) as client:
+                response = await client.post(
+                    f"{settings.OLLAMA_BASE_URL}/api/chat",
+                    json={
+                        "model": settings.LLM_MODEL,
+                        "messages": chat_messages,
+                        "stream": False,
+                        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "30m"),
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+        except Exception as e:
+            raise LLMError(f"LLM chat failed: {type(e).__name__}: {str(e) or repr(e)}") from e
+        if isinstance(data, dict) and "error" in data:
+            raise LLMError(f"Ollama error: {data['error']}")
+        content = (data.get("message") or {}).get("content") if isinstance(data, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise LLMError("LLM chat returned an empty response")
+        return content
 
 
 _llm_service = LLMService()
 
 
 def get_llm_service():
-    return _llm_service
+    return _llm_service

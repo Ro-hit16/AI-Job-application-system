@@ -22,14 +22,35 @@ export default function ApprovalQueue() {
 
   const apps = data?.data ?? [];
 
-  const handleDownloadResume = async (id: string, sourcePath?: string) => {
+  const handleDownloadResume = async (id: string) => {
     try {
       const res = await applicationsApi.downloadResume(id);
-      const ext = sourcePath?.includes(".") ? sourcePath.split(".").pop() : "pdf";
-      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const ct = String(res.headers?.["content-type"] ?? "");
+      const ext = ct.includes("pdf") ? "pdf" : ct.includes("tex") ? "tex" : "pdf";
+      const blob = new Blob([res.data], { type: ct || "application/pdf" });
+      const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `updated_resume_${id}.${ext}`;
+
+      let downloadName = "";
+      const disposition: string = res.headers?.["content-disposition"] ?? "";
+      if (disposition && disposition.includes("filename=")) {
+        const match = disposition.match(/filename=["']?([^"';]+)["']?/);
+        if (match && match[1]) {
+          downloadName = match[1];
+        }
+      }
+      if (!downloadName) {
+        const targetApp = apps.find((app: any) => app.id === id);
+        const companyClean = targetApp?.job?.company
+          ? targetApp.job.company.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_")
+          : "";
+        downloadName = companyClean
+          ? `Rohit_Devkar_Resume_${companyClean}.${ext}`
+          : `Rohit_Devkar_Resume.${ext}`;
+      }
+
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -54,7 +75,7 @@ export default function ApprovalQueue() {
         <div className="space-y-4">
           {apps.map((app: any) => (
             <div key={app.id} className="bg-white rounded-xl border border-gray-200 p-6">
-              
+
               {/* Job Info Header */}
               <div className="flex justify-between items-start mb-3">
                 <div>
@@ -80,21 +101,37 @@ export default function ApprovalQueue() {
                 <span className="bg-amber-100 text-amber-700 text-xs px-2 py-1 rounded-full shrink-0">Pending</span>
               </div>
 
-              {/* Tailored Resume */}
-              {app.tailored_resume_path && (
-                <div className="mb-4 p-3 bg-gray-50 rounded-lg flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-xs text-gray-500 mb-1">Tailored Resume</p>
-                    <p className="text-sm text-gray-700 font-mono truncate">{app.tailored_resume_path}</p>
-                  </div>
-                  <button
-                    onClick={() => handleDownloadResume(app.id, app.tailored_resume_path)}
-                    className="flex items-center gap-1.5 shrink-0 bg-white border border-gray-200 text-gray-700 px-3 py-1.5 rounded-lg text-sm hover:bg-gray-100"
-                  >
-                    <DownloadIcon className="w-4 h-4" /> Download Updated Resume
-                  </button>
+              {/* Tailored Resume Download */}
+              <div className="mb-4 p-3 bg-gray-50 rounded-lg flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-500 mb-0.5">Tailored Resume</p>
+                  <p className="text-sm text-gray-700 truncate">
+                    {app.tailored_resume_path
+                      ? "Ready to download"
+                      : app.error_message?.startsWith("Resume tailoring failed")
+                        ? "Generation failed"
+                        : "Not yet generated"}
+                  </p>
                 </div>
-              )}
+                <button
+                  onClick={() => handleDownloadResume(app.id)}
+                  disabled={!app.tailored_resume_path}
+                  title={
+                    app.tailored_resume_path
+                      ? "Download tailored PDF resume"
+                      : app.error_message?.startsWith("Resume tailoring failed")
+                        ? "Resume generation failed — re-run the agent"
+                        : "Resume not generated yet"
+                  }
+                  className={`flex items-center gap-1.5 shrink-0 px-3 py-1.5 rounded-lg text-sm border transition-colors ${app.tailored_resume_path
+                    ? "bg-white border-gray-200 text-gray-700 hover:bg-gray-100 cursor-pointer"
+                    : "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
+                    }`}
+                >
+                  <DownloadIcon className="w-4 h-4" />
+                  {app.tailored_resume_path ? "Download Resume (PDF)" : "Resume not ready"}
+                </button>
+              </div>
 
               {/* Edit Instructions Box */}
               {editId === app.id && (

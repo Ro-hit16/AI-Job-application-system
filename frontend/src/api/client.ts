@@ -78,6 +78,24 @@ export const resumesApi = {
     });
   },
   delete: (id: string) => apiClient.delete(`/resumes/${id}`),
+  tailorInstant: (data: {
+    job_title?: string;
+    company?: string;
+    job_description: string;
+    instructions?: string;
+    custom_template?: string;
+  }) => apiClient.post("/resumes/tailor-instant", data),
+  downloadInstant: (tailorId: string, name?: string) =>
+    apiClient.get(`/resumes/instant-download/${tailorId}`, {
+      params: name ? { name } : {},
+      responseType: "blob",
+    }),
+  getTemplate: () =>
+    apiClient.get<{ template: string; is_custom: boolean; default_template: string }>("/resumes/template"),
+  saveTemplate: (template: string) =>
+    apiClient.put<{ message: string; template: string; is_custom: boolean }>("/resumes/template", { template }),
+  resetTemplate: () =>
+    apiClient.delete<{ message: string; template: string; is_custom: boolean }>("/resumes/template"),
 };
 
 // ─── Jobs ─────────────────────────────────────────────────────────────────────
@@ -85,6 +103,8 @@ export const jobsApi = {
   list: (params?: { portal?: string; status?: string; search?: string; limit?: number; offset?: number }) =>
     apiClient.get("/jobs/", { params }),
   get: (id: string) => apiClient.get(`/jobs/${id}`),
+  downloadResume: (jobId: string) =>
+    apiClient.get(`/jobs/${jobId}/resume/download`, { responseType: "blob" }),
 };
 
 // ─── Applications ─────────────────────────────────────────────────────────────
@@ -96,6 +116,8 @@ export const applicationsApi = {
     apiClient.post(`/applications/${id}/approve`, { decision, edit_instructions }),
   downloadResume: (id: string) =>
     apiClient.get(`/applications/${id}/resume/download`, { responseType: "blob" }),
+  regeneratePdf: (id: string) =>
+    apiClient.post(`/applications/${id}/resume/regenerate-pdf`),
   markManuallyApplied: (id: string) => apiClient.post(`/applications/${id}/mark-manual-applied`),
 };
 

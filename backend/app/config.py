@@ -109,20 +109,26 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def build_computed_fields(self) -> "Settings":
-        self.DATABASE_URL = (
-            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-        )
-        self.DATABASE_URL_SYNC = (
-            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
-        )
+        if not self.DATABASE_URL:
+            self.DATABASE_URL = (
+                f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+                f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            )
+    
+        if not self.DATABASE_URL_SYNC:
+            self.DATABASE_URL_SYNC = self.DATABASE_URL.replace(
+                "+asyncpg", "+psycopg2"
+            )
+    
         if self.REDIS_PASSWORD:
             self.REDIS_URL = (
                 f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
             )
         else:
-            self.REDIS_URL = f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+            self.REDIS_URL = (
+                f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+            )
+    
         return self
 
     def is_production(self) -> bool:

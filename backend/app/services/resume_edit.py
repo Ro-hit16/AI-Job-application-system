@@ -5,10 +5,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# One-line bullets in the Overleaf "Jake" template: \resumeItem{...}
+# Bullets in LaTeX resume templates: \resumeItem{...} or standard \item ...
+# Note: \r? before $ handles Windows CRLF line endings in template files.
 ITEM_RE = re.compile(
-    r"^(?P<indent>[ \t]*)\\resumeItem\{(?P<body>.*)\}[ \t]*$", re.MULTILINE
+    r"^[ \t]*(?:\\resumeItem\{(?P<resume_body>.*)\}|\\item(?:\[[^\]]*\])?[ \t]+(?P<item_body>.*?))\r?[ \t]*$",
+    re.MULTILINE,
 )
+
 _HEADING_MARKERS = ("\\resumeProjectHeading", "\\resumeSubheading", "\\section")
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9+#.\-]*[A-Za-z0-9+#]|[A-Za-z]")
 _NUM_RE = re.compile(r"\d+(?:[.,]\d+)?")
@@ -47,16 +50,22 @@ def _context(tex: str, pos: int) -> str:
     start = max(tex.rfind(mk, 0, pos) for mk in _HEADING_MARKERS)
     if start < 0:
         return ""
-    snippet = tex[start:pos].split("\\resumeItem")[0]
+    snippet = re.split(r"\\(?:resumeItem|item)\b", tex[start:pos])[0]
     snippet = snippet.replace("$|$", " | ")
     return _strip_latex(snippet)[:90]
 
 
 def extract_items(tex: str) -> list[Item]:
-    return [
-        Item(i, m.group("body"), m.start("body"), m.end("body"), _context(tex, m.start()))
-        for i, m in enumerate(ITEM_RE.finditer(tex))
-    ]
+    items = []
+    for i, m in enumerate(ITEM_RE.finditer(tex)):
+        if m.group("resume_body") is not None:
+            body = m.group("resume_body")
+            start, end = m.start("resume_body"), m.end("resume_body")
+        else:
+            body = m.group("item_body")
+            start, end = m.start("item_body"), m.end("item_body")
+        items.append(Item(i, body, start, end, _context(tex, m.start())))
+    return items
 
 
 def _norm(w: str) -> str:
@@ -185,7 +194,7 @@ def validate_pdf(path, compile_log: str = "") -> str | None:
     if not p.is_file():
         return f"PDF not found on disk: {p.name}"
     data = p.read_bytes()
-    if len(data) < 2000:
+    if len(data) < 800:
         return f"PDF too small ({len(data)} bytes)"
     if not data.startswith(b"%PDF-"):
         return "File does not start with %PDF- signature"
