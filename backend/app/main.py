@@ -21,22 +21,55 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Starting application")
     import socket
-    
-    host = settings.DATABASE_URL.split("@")[-1].split("/")[0].split(":")[0]
-    
-    try:
-        addresses = socket.getaddrinfo(
-            host, 5432, type=socket.SOCK_STREAM
+
+host = settings.DATABASE_URL.split("@")[-1].split("/")[0].split(":")[0]
+
+try:
+    addresses = socket.getaddrinfo(
+        host, 5432, type=socket.SOCK_STREAM
+    )
+    for address in addresses:
+        logger.info(
+            "Neon DNS result: family=%s address=%s",
+            address[0],
+            address[4][0],
         )
-        for address in addresses:
+except Exception:
+    logger.exception("Neon DNS resolution failed")
+
+    import socket
+
+for address in addresses:
+    family, socktype, proto, canonname, sockaddr = address
+    try:
+        with socket.socket(family, socktype, proto) as sock:
+            sock.settimeout(5)
+            result = sock.connect_ex(sockaddr)
             logger.info(
-                "Neon DNS result: family=%s address=%s",
-                address[0],
-                address[4][0],
+                "Neon TCP test: address=%s result=%s",
+                sockaddr[0],
+                result,
             )
     except Exception:
-        logger.exception("Neon DNS resolution failed")
-    if settings.ENVIRONMENT == "development":
+        logger.exception("Neon TCP test failed")
+
+    import socket
+
+    for address in addresses:
+        family, socktype, proto, canonname, sockaddr = address
+        try:
+            with socket.socket(family, socktype, proto) as sock:
+                sock.settimeout(5)
+                result = sock.connect_ex(sockaddr)
+                logger.info(
+                    "Neon TCP test: address=%s result=%s",
+                    sockaddr[0],
+                    result,
+                )
+        except Exception:
+            logger.exception("Neon TCP test failed")   
+            
+    if settings.ENVIRONMENT == "production":
         await create_tables()
     db_health = await check_database_health()
     if db_health["status"] != "healthy":
