@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 
 import httpx
 
@@ -66,7 +67,7 @@ def _timeout(read: float | None = None) -> httpx.Timeout:
     # With streaming, `read` is the max wait for the NEXT chunk (first token
     # includes prompt evaluation on CPU), not the whole generation.
     return httpx.Timeout(
-        connect=_env_float("OLLAMA_CONNECT_TIMEOUT", 10.0),
+        connect=_env_float("OLLAMA_CONNECT_TIMEOUT", 2.5),
         read=read or _env_float("OLLAMA_READ_TIMEOUT", 180.0),
         write=30.0,
         pool=10.0,
@@ -77,6 +78,22 @@ class LLMService:
     def __init__(self) -> None:
         self._transport: httpx.AsyncBaseTransport | None = None  # test hook
         self._retry_backoff = 2.0
+        self._last_check: float = 0.0
+        self._available: bool = False
+
+    async def _check_availability(self) -> bool:
+        """Fast check whether Ollama is online with a 30s cache to avoid blocking requests."""
+        now = time.time()
+        if (now - self._last_check) < 30.0:
+            return self._available
+        self._last_check = now
+        try:
+            async with httpx.AsyncClient(timeout=1.0, transport=self._transport) as client:
+                resp = await client.get(f"{settings.OLLAMA_BASE_URL}/api/tags")
+                self._available = (resp.status_code == 200)
+        except Exception:
+            self._available = False
+        return self._available
 
     async def _stream_chat(self, payload: dict) -> str:
         parts: list[str] = []
@@ -115,6 +132,9 @@ class LLMService:
         json_mode: bool = False,
         temperature: float = 0.2,
     ) -> str:
+        if not await self._check_availability():
+            raise LLMError(f"Ollama server offline at {settings.OLLAMA_BASE_URL}")
+
         payload = {
             "model": settings.LLM_MODEL,
             "messages": [
@@ -183,7 +203,8 @@ class LLMService:
         return result
 
     async def embed(self, text: str) -> list[float]:
-        # NOTE: the old second `embed` (returned [0.1]*384 on any error) was removed.
+        if not await self._check_availability():
+            raise LLMError(f"Ollama server offline at {settings.OLLAMA_BASE_URL}")
         try:
             async with httpx.AsyncClient(timeout=_timeout(read=60.0)) as client:
                 response = await client.post(
@@ -200,6 +221,8 @@ class LLMService:
 
     async def chat(self, messages: list[dict], system_prompt: str = "") -> str:
         """Multi-turn chat. Raises LLMError on any failure (never returns error text)."""
+        if not await self._check_availability():
+            raise LLMError(f"Ollama server offline at {settings.OLLAMA_BASE_URL}")
         chat_messages = []
         if system_prompt:
             chat_messages.append({"role": "system", "content": system_prompt})

@@ -1,4 +1,4 @@
-﻿
+
 from __future__ import annotations
 
 import socket
@@ -116,13 +116,66 @@ app = FastAPI(
 )
 
 
+cors_origins = list(settings.CORS_ORIGINS)
+if "https://ai-job-application-system.vercel.app" not in cors_origins:
+    cors_origins.append("https://ai-job-application-system.vercel.app")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https:\/\/.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def cors_safety_middleware(request: Request, call_next):
+    """
+    Safety net middleware guaranteeing that preflight OPTIONS requests and
+    all response headers properly include Access-Control-Allow-Origin for Vercel
+    and configured origins, even on unexpected 500 errors.
+    """
+    origin = request.headers.get("origin")
+    is_allowed = False
+    if origin:
+        if (
+            origin in cors_origins
+            or origin.endswith(".vercel.app")
+            or "localhost" in origin
+            or "127.0.0.1" in origin
+        ):
+            is_allowed = True
+
+    if request.method == "OPTIONS":
+        resp = JSONResponse(content={"status": "ok"}, status_code=200)
+        if is_allowed and origin:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"
+            resp.headers["Access-Control-Allow-Headers"] = "*"
+            resp.headers["Access-Control-Expose-Headers"] = "*"
+        return resp
+
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        logger.exception("Unhandled error during request processing", extra={"path": str(request.url), "error": str(exc)})
+        response = JSONResponse(
+            status_code=500,
+            content={"error": "internal_error", "message": str(exc)},
+        )
+
+    if is_allowed and origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH, HEAD"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "*"
+
+    return response
 
 
 @app.exception_handler(AppException)

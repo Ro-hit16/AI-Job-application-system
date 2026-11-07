@@ -36,6 +36,23 @@ async def upload_resume(
     pdf_service = get_pdf_service()
     file_path = pdf_service.save_upload(content, file.filename, str(user_id))
 
+    # Pre-parse resume text and skills immediately so the user can run the pipeline or mock interview without delay
+    raw_text = ""
+    try:
+        raw_text = pdf_service.extract_text(file_path)
+    except Exception:
+        pass
+
+    from app.services.instant_tailor import extract_skills_from_jd
+    extracted_skills = extract_skills_from_jd(raw_text) if raw_text else []
+    skills_dict = {
+        "languages": [s for s in extracted_skills if s in ["Python", "JavaScript", "TypeScript", "Java", "C++", "Go", "Rust"]],
+        "frameworks": [s for s in extracted_skills if s in ["React.js", "Node.js", "Express.js", "FastAPI", "Django", "Spring Boot", "Next.js"]],
+        "databases": [s for s in extracted_skills if s in ["PostgreSQL", "MySQL", "MongoDB", "Redis", "SQL"]],
+        "tools": [s for s in extracted_skills if s in ["Docker", "Kubernetes", "AWS", "Git", "CI/CD", "GitHub Actions"]],
+        "all": extracted_skills,
+    }
+
     if set_primary:
         # Unset existing primary
         existing = await db.execute(select(Resume).where(Resume.user_id == user_id, Resume.is_primary == True))
@@ -46,6 +63,10 @@ async def upload_resume(
         user_id=user_id,
         file_path=file_path,
         original_filename=file.filename,
+        raw_text=raw_text,
+        skills=skills_dict,
+        embedding_id=f"emb_{user_id}",
+        is_parsed=bool(raw_text),
         is_primary=set_primary,
     )
     db.add(resume)

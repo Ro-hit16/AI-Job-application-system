@@ -28,7 +28,7 @@ class NotificationService:
             msg["From"] = settings.SMTP_USERNAME
             msg["To"] = recipient
             msg.attach(MIMEText(body, "html"))
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
+            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=5.0) as server:
                 server.starttls()
                 server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
                 server.sendmail(settings.SMTP_USERNAME, recipient, msg.as_string())
