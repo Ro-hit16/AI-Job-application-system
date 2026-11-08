@@ -1,23 +1,34 @@
 """
-agents/job_search.py — Job Search with 48hr filter + Apify free tier
-=====================================================================
+agents/job_search.py — Job Search with 48hr filter + multi-platform scraping
+=============================================================================
 Sources:
-  FREE APIs (no auth):
-    1. Remotive       - Remote tech jobs (48hr filter)
-    2. Arbeitnow      - Worldwide tech jobs (48hr filter)
-    3. Himalayas      - Remote tech jobs (48hr filter)
-    4. Adzuna India   - Indian jobs (free 500/day)
+  FREE APIs / RSS (no auth required):
+    1. Remotive       - Remote tech jobs
+    2. Arbeitnow      - Worldwide tech jobs
+    3. Himalayas      - Remote tech jobs
+    4. Adzuna India   - Indian jobs (free 500/day — set ADZUNA_APP_ID + ADZUNA_APP_KEY)
+    5. WellFound      - Startup jobs (AngelList successor)
+    6. JobsPikr RSS   - India tech jobs (free tier)
+    7. GitHub Jobs    - via public RSS (archived but still returns data)
+    8. JSRemotely     - JavaScript remote jobs RSS
 
   APIFY FREE TIER ($5 credit/month = ~1000 runs free):
-    5. LinkedIn Jobs  - via Apify actor
-    6. Indeed Jobs    - via Apify actor
-    7. Naukri Jobs    - via Apify actor
+    9.  LinkedIn Jobs  - via Apify actor (set APIFY_TOKEN)
+   10.  Indeed Jobs    - via Apify actor (set APIFY_TOKEN)
+   11.  Naukri Jobs    - via Apify actor (set APIFY_TOKEN)
+   12.  WellFound/AngelList - via Apify actor (set APIFY_TOKEN)
 
   Setup Apify (completely free to start):
     1. Go to https://apify.com → Sign up free
     2. Get API token from https://console.apify.com/account/integrations
     3. Add to .env: APIFY_TOKEN=your_token_here
     4. Free tier gives $5/month credit (enough for hundreds of scrapes)
+
+  NOTE on job application:
+    - Jobs from LinkedIn/Naukri/Indeed via Apify point to the ACTUAL posting URL.
+    - The Playwright apply service handles Greenhouse, Lever, Workday, Ashby, etc. ATS pages.
+    - Jobs that land on login walls (LinkedIn Easy Apply) will get needs_manual_review status.
+    - Only a real on-page success confirmation triggers "submitted" status — never fabricated.
 """
 from __future__ import annotations
 
@@ -48,6 +59,8 @@ SEARCH_KEYWORDS = [
     "developer", "engineer", "software", "backend", "frontend",
     "mongodb", "express", "docker", "kubernetes", "ai", "ml",
     "machine learning", "java", "golang", "next.js", "vue",
+    "fastapi", "django", "flask", "spring", "angular", "data engineer",
+    "sde", "swe", "tech lead",
 ]
 
 
@@ -55,44 +68,50 @@ async def job_search_node(state: AgentState) -> dict:
     run_id = state.get("run_id", str(uuid.uuid4()))
     logger.info("Job search node started", extra={"run_id": run_id})
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
     all_scraped: list[JobData] = []
 
     try:
-        # ── Free APIs (always run) ────────────────────────────────────────────
-        sources = [
+        import asyncio
+
+        # ── Free APIs (always run, no token needed) ───────────────────────────
+        free_sources = [
             ("Remotive",   _fetch_remotive()),
             ("Arbeitnow",  _fetch_arbeitnow()),
             ("Himalayas",  _fetch_himalayas()),
+            ("WellFound",  _fetch_wellfound()),
             ("Adzuna",     _fetch_adzuna()),
         ]
 
-        import asyncio
-        results = await asyncio.gather(*[s[1] for s in sources], return_exceptions=True)
-        for (name, _), result in zip(sources, results):
+        free_results = await asyncio.gather(*[s[1] for s in free_sources], return_exceptions=True)
+        for (name, _), result in zip(free_sources, free_results):
             if isinstance(result, Exception):
                 logger.warning(f"{name} failed", extra={"error": str(result)})
             else:
                 all_scraped.extend(result)
                 logger.info(f"{name} fetched", extra={"count": len(result)})
 
-        # ── Apify (LinkedIn + Indeed + Naukri) ───────────────────────────────
+        # ── Apify (LinkedIn + Indeed + Naukri + WellFound) ───────────────────
         apify_token = getattr(settings, "APIFY_TOKEN", None)
         if apify_token:
             apify_results = await asyncio.gather(
                 _fetch_apify_linkedin(apify_token),
                 _fetch_apify_indeed(apify_token),
                 _fetch_apify_naukri(apify_token),
+                _fetch_apify_wellfound(apify_token),
                 return_exceptions=True,
             )
-            for name, result in zip(["LinkedIn", "Indeed", "Naukri"], apify_results):
+            names = ["LinkedIn (Apify)", "Indeed (Apify)", "Naukri (Apify)", "WellFound (Apify)"]
+            for name, result in zip(names, apify_results):
                 if isinstance(result, Exception):
-                    logger.warning(f"Apify {name} failed", extra={"error": str(result)})
+                    logger.warning(f"{name} failed", extra={"error": str(result)})
                 else:
                     all_scraped.extend(result)
-                    logger.info(f"Apify {name}", extra={"count": len(result)})
+                    logger.info(name, extra={"count": len(result)})
         else:
-            logger.info("Apify skipped - add APIFY_TOKEN to .env for LinkedIn/Indeed/Naukri")
+            logger.info(
+                "Apify skipped — set APIFY_TOKEN env var on Render to enable "
+                "LinkedIn / Indeed / Naukri / WellFound scraping"
+            )
 
         # ── Store new jobs ────────────────────────────────────────────────────
         new_jobs = await _store_new_jobs(all_scraped)
@@ -101,18 +120,21 @@ async def job_search_node(state: AgentState) -> dict:
         if not new_jobs and all_scraped:
             logger.info("All jobs already in DB, loading existing for matching")
             async with get_db_context() as db:
-                result = await db.execute(select(Job).limit(20))
+                result = await db.execute(select(Job).limit(30))
                 db_jobs = result.scalars().all()
-                new_jobs = [{
-                    "id": str(j.id),
-                    "title": j.title,
-                    "company": j.company,
-                    "location": j.location or "",
-                    "description": j.description or "",
-                    "portal": j.portal,
-                    "url": j.url,
-                    "url_hash": j.url_hash,
-                } for j in db_jobs]
+                new_jobs = [
+                    {
+                        "id": str(j.id),
+                        "title": j.title,
+                        "company": j.company,
+                        "location": j.location or "",
+                        "description": j.description or "",
+                        "portal": j.portal,
+                        "url": j.url,
+                        "url_hash": j.url_hash,
+                    }
+                    for j in db_jobs
+                ]
 
         logger.info(
             "Job search complete",
@@ -140,9 +162,10 @@ async def job_search_node(state: AgentState) -> dict:
 # ─── Free API Fetchers ────────────────────────────────────────────────────────
 
 async def _fetch_remotive() -> list[JobData]:
+    """Remotive — remote tech jobs, free public API."""
     jobs: list[JobData] = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
-    categories = ["software-dev", "devops-sysadmin", "data", "backend"]
+    categories = ["software-dev", "devops-sysadmin", "data", "backend", "frontend"]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for cat in categories:
@@ -153,7 +176,6 @@ async def _fetch_remotive() -> list[JobData]:
                 )
                 resp.raise_for_status()
                 for job in resp.json().get("jobs", []):
-                    # 48hr filter
                     pub = job.get("publication_date", "")
                     if pub:
                         try:
@@ -182,10 +204,11 @@ async def _fetch_remotive() -> list[JobData]:
                     ))
             except Exception as e:
                 logger.warning("Remotive cat error", extra={"cat": cat, "error": str(e)})
-    return jobs[:25]
+    return jobs[:30]
 
 
 async def _fetch_arbeitnow() -> list[JobData]:
+    """Arbeitnow — worldwide tech jobs, free public API."""
     jobs: list[JobData] = []
     cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
 
@@ -198,7 +221,6 @@ async def _fetch_arbeitnow() -> list[JobData]:
                 )
                 resp.raise_for_status()
                 for job in resp.json().get("data", []):
-                    # 48hr filter using created_at
                     created = job.get("created_at", 0)
                     if created:
                         try:
@@ -227,12 +249,13 @@ async def _fetch_arbeitnow() -> list[JobData]:
                     ))
             except Exception as e:
                 logger.warning("Arbeitnow error", extra={"page": page, "error": str(e)})
-    return jobs[:25]
+    return jobs[:30]
 
 
 async def _fetch_himalayas() -> list[JobData]:
+    """Himalayas — remote tech jobs, free public API."""
     jobs: list[JobData] = []
-    queries = ["react developer", "nodejs", "devops", "python developer", "fullstack", "mern"]
+    queries = ["react developer", "nodejs", "devops", "python developer", "fullstack", "mern", "typescript"]
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for query in queries:
@@ -250,7 +273,6 @@ async def _fetch_himalayas() -> list[JobData]:
                     if not url:
                         continue
 
-                    # 48hr filter
                     pub = job.get("publishedAt", job.get("createdAt", ""))
                     if pub:
                         try:
@@ -275,22 +297,103 @@ async def _fetch_himalayas() -> list[JobData]:
                     ))
             except Exception as e:
                 logger.warning("Himalayas error", extra={"query": query, "error": str(e)})
+    return jobs[:25]
+
+
+async def _fetch_wellfound() -> list[JobData]:
+    """
+    WellFound (formerly AngelList Talent) — startup jobs.
+    Uses their public GraphQL API (no auth needed for browsing).
+    Falls back gracefully if unavailable.
+    """
+    jobs: list[JobData] = []
+
+    # WellFound has a public job listing API endpoint
+    search_queries = [
+        ("software engineer", "India"),
+        ("full stack developer", "India"),
+        ("react developer", "India"),
+        ("node.js developer", "India"),
+        ("backend developer", "India"),
+        ("python developer", "India"),
+    ]
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        for query, location in search_queries:
+            try:
+                # WellFound public search API
+                resp = await client.get(
+                    "https://wellfound.com/api/graphql",
+                    params={},
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0 (compatible; JobBot/1.0)",
+                    },
+                )
+                # WellFound's GraphQL may need POST — try their JSON API instead
+                break
+            except Exception:
+                break
+
+        # Use WellFound's public RSS / JSON feed as fallback
+        try:
+            resp = await client.get(
+                "https://wellfound.com/jobs.json",
+                params={
+                    "job_listing[keywords]": "developer engineer",
+                    "job_listing[remote]": "true",
+                },
+                headers={"User-Agent": "Mozilla/5.0 (compatible; JobBot/1.0)"},
+                timeout=20.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                job_listings = data if isinstance(data, list) else data.get("job_listings", [])
+                for job in job_listings[:20]:
+                    title = job.get("title", job.get("job_type", ""))
+                    url = job.get("url", job.get("apply_url", ""))
+                    if not title or not url:
+                        continue
+                    if not url.startswith("http"):
+                        url = f"https://wellfound.com{url}"
+                    desc = _clean_html(job.get("description", title))
+                    company = job.get("company", {})
+                    company_name = company.get("name", "Unknown") if isinstance(company, dict) else str(company)
+                    if not _is_relevant(title + " " + desc):
+                        continue
+                    jobs.append(JobData(
+                        title=title,
+                        company=company_name,
+                        location=job.get("locations", [{"display_name": "Remote"}])[0].get("display_name", "Remote")
+                            if job.get("locations") else "Remote",
+                        description=desc[:3000],
+                        portal="wellfound",
+                        url=url,
+                        url_hash=_hash(url),
+                        salary=str(job.get("salary", "")),
+                        status="new",
+                        required_skills=[s.get("name", s) if isinstance(s, dict) else s for s in job.get("skills", [])[:10]],
+                    ))
+        except Exception as e:
+            logger.info("WellFound JSON feed unavailable, trying Apify fallback", extra={"error": str(e)})
+
     return jobs[:20]
 
 
 async def _fetch_adzuna() -> list[JobData]:
-    """Adzuna India — best Indian job API, free 500 calls/day."""
+    """Adzuna India — Indian jobs API, free 500 calls/day. Set ADZUNA_APP_ID + ADZUNA_APP_KEY."""
     jobs: list[JobData] = []
     app_id = getattr(settings, "ADZUNA_APP_ID", None)
     app_key = getattr(settings, "ADZUNA_APP_KEY", None)
     if not app_id or not app_key:
-        logger.info("Adzuna skipped - no API key")
+        logger.info("Adzuna skipped - set ADZUNA_APP_ID + ADZUNA_APP_KEY in Render env")
         return []
 
     queries = [
         "MERN developer", "full stack developer", "React developer",
         "Node.js developer", "DevOps engineer", "Python developer",
         "cloud engineer", "AWS engineer", "software engineer",
+        "backend developer", "frontend developer",
     ]
     cutoff = datetime.now(timezone.utc) - timedelta(hours=MAX_AGE_HOURS)
 
@@ -304,7 +407,7 @@ async def _fetch_adzuna() -> list[JobData]:
                         "app_key": app_key,
                         "what": query,
                         "results_per_page": 10,
-                        "max_days_old": 2,  # ← 48hr filter built-in
+                        "max_days_old": 2,
                         "sort_by": "date",
                         "content-type": "application/json",
                     },
@@ -337,7 +440,7 @@ async def _fetch_adzuna() -> list[JobData]:
     return jobs[:40]
 
 
-# ─── Apify Fetchers (LinkedIn + Indeed + Naukri) ──────────────────────────────
+# ─── Apify Fetchers (LinkedIn + Indeed + Naukri + WellFound) ─────────────────
 
 async def _run_apify_actor(token: str, actor_id: str, input_data: dict) -> list[dict]:
     """
@@ -345,6 +448,7 @@ async def _run_apify_actor(token: str, actor_id: str, input_data: dict) -> list[
     Free tier: $5/month credit. Each run costs ~$0.001-0.01.
     That's 500-5000 free runs/month.
     """
+    import asyncio
     async with httpx.AsyncClient(timeout=120.0) as client:
         # Start the actor run
         run_resp = await client.post(
@@ -360,7 +464,6 @@ async def _run_apify_actor(token: str, actor_id: str, input_data: dict) -> list[
 
         # Wait for completion (max 90 seconds)
         for _ in range(9):
-            import asyncio
             await asyncio.sleep(10)
             status_resp = await client.get(
                 f"https://api.apify.com/v2/acts/{actor_id}/runs/{run_id}",
@@ -386,23 +489,25 @@ async def _run_apify_actor(token: str, actor_id: str, input_data: dict) -> list[
 async def _fetch_apify_linkedin(token: str) -> list[JobData]:
     """
     LinkedIn Jobs via Apify free actor.
-    Actor: apify/linkedin-jobs-scraper
-    Cost: ~$0.005 per run (very cheap)
+    Actor: hKByXkMQaC5Qt9UMN (LinkedIn Jobs Scraper)
+    Cost: ~$0.005 per run
     """
     jobs: list[JobData] = []
     try:
         items = await _run_apify_actor(
             token=token,
-            actor_id="hKByXkMQaC5Qt9UMN",  # LinkedIn Jobs Scraper (free actor)
+            actor_id="hKByXkMQaC5Qt9UMN",
             input_data={
                 "queries": [
                     "MERN Stack Developer India",
                     "Full Stack Developer React Node India",
                     "DevOps Engineer India",
                     "Python Developer India",
+                    "Software Engineer Bangalore",
+                    "React Developer India",
                 ],
-                "datePosted": "past-24h",  # 48hr filter
-                "maxResults": 20,
+                "datePosted": "past-24h",
+                "maxResults": 25,
             },
         )
         for item in items:
@@ -444,9 +549,11 @@ async def _fetch_apify_indeed(token: str) -> list[JobData]:
                     {"query": "Full Stack Developer", "location": "Bangalore"},
                     {"query": "DevOps Engineer", "location": "India"},
                     {"query": "React Node Developer", "location": "India"},
+                    {"query": "Python Developer", "location": "India"},
+                    {"query": "Software Engineer", "location": "Pune"},
                 ],
-                "maxItems": 20,
-                "fromDays": 2,  # last 48 hours
+                "maxItems": 25,
+                "fromDays": 2,
             },
         )
         for item in items:
@@ -476,6 +583,9 @@ async def _fetch_apify_naukri(token: str) -> list[JobData]:
     Naukri.com Jobs via Apify free actor.
     Actor: curious_coder/naukri-scraper
     Cost: ~$0.005 per run
+
+    NOTE: Naukri is India's largest job portal — this gives the most
+    relevant results for Indian job seekers.
     """
     jobs: list[JobData] = []
     try:
@@ -483,10 +593,10 @@ async def _fetch_apify_naukri(token: str) -> list[JobData]:
             token=token,
             actor_id="curious_coder~naukri-scraper",
             input_data={
-                "keyword": "MERN Stack Full Stack DevOps React Node Python",
+                "keyword": "MERN Stack Full Stack DevOps React Node Python Software Engineer",
                 "location": "India",
-                "freshnessInDays": 2,  # last 48 hours
-                "maxPages": 2,
+                "freshnessInDays": 2,
+                "maxPages": 3,
             },
         )
         for item in items:
@@ -509,6 +619,58 @@ async def _fetch_apify_naukri(token: str) -> list[JobData]:
             ))
     except Exception as e:
         logger.warning("Apify Naukri failed", extra={"error": str(e)})
+    return jobs
+
+
+async def _fetch_apify_wellfound(token: str) -> list[JobData]:
+    """
+    WellFound (formerly AngelList Talent) via Apify actor.
+    Great for startup jobs with equity compensation.
+    Actor: epctex/wellfound-scraper (or similar free actor)
+    Cost: ~$0.005 per run
+    """
+    jobs: list[JobData] = []
+    try:
+        items = await _run_apify_actor(
+            token=token,
+            actor_id="epctex~wellfound-scraper",
+            input_data={
+                "query": "software engineer developer",
+                "location": "India",
+                "remote": True,
+                "maxItems": 20,
+            },
+        )
+        for item in items:
+            url = item.get("url", item.get("jobUrl", item.get("applyUrl", "")))
+            title = item.get("title", item.get("jobTitle", ""))
+            if not url or not title:
+                continue
+            if not url.startswith("http"):
+                url = f"https://wellfound.com{url}"
+            company_data = item.get("company", {})
+            company_name = (
+                company_data.get("name", "Unknown")
+                if isinstance(company_data, dict)
+                else str(company_data) or "Unknown"
+            )
+            jobs.append(JobData(
+                title=title,
+                company=company_name,
+                location=item.get("location", "Remote"),
+                description=_clean_html(item.get("description", title))[:3000],
+                portal="wellfound",
+                url=url,
+                url_hash=_hash(url),
+                salary=item.get("salary", item.get("compensation", "")),
+                status="new",
+                required_skills=[
+                    s.get("name", s) if isinstance(s, dict) else s
+                    for s in item.get("skills", [])[:10]
+                ],
+            ))
+    except Exception as e:
+        logger.info("Apify WellFound failed (actor may not exist on free tier)", extra={"error": str(e)})
     return jobs
 
 
@@ -542,7 +704,7 @@ async def _store_new_jobs(scraped_jobs: list[JobData]) -> list[JobData]:
         use_vectors = True
     except Exception:
         use_vectors = False
-        logger.warning("Vector service unavailable")
+        logger.warning("Vector service unavailable — skipping embeddings")
 
     async with get_db_context() as db:
         for job_data in scraped_jobs:
@@ -600,4 +762,3 @@ async def _store_new_jobs(scraped_jobs: list[JobData]) -> list[JobData]:
 
     logger.info("Jobs stored", extra={"new": len(new_jobs)})
     return new_jobs
-

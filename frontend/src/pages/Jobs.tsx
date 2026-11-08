@@ -39,8 +39,13 @@ export default function Jobs() {
         >
           <option value="">All Portals</option>
           <option value="linkedin">LinkedIn</option>
-          <option value="indeed">Indeed</option>
           <option value="naukri">Naukri</option>
+          <option value="wellfound">WellFound</option>
+          <option value="indeed">Indeed</option>
+          <option value="remotive">Remotive</option>
+          <option value="arbeitnow">Arbeitnow</option>
+          <option value="himalayas">Himalayas</option>
+          <option value="adzuna">Adzuna</option>
         </select>
 
         <select

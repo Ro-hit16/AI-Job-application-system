@@ -276,18 +276,34 @@ async def submit_application(inp: ApplyInput) -> ApplyResult:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     trace_dir = Path(settings.UPLOAD_DIR) / inp.user_id / "traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
-    # TEMPORARY DIAGNOSTIC
+
+    # Verify Playwright / Chromium is available before attempting browser launch.
+    # On Render (Dockerfile uses playwright install chromium) this should work.
+    # If browser binaries are missing, return needs_manual_review immediately.
+    try:
+        import subprocess as _sp
+        chk = _sp.run(["playwright", "--version"], capture_output=True, timeout=5)
+        if chk.returncode != 0:
+            raise RuntimeError("playwright binary not found")
+    except Exception as _pw_err:
+        logger.warning(
+            "Playwright unavailable - returning needs_manual_review",
+            extra={"error": str(_pw_err), "url": inp.job_url},
+        )
+        return ApplyResult(
+            status="needs_manual_review",
+            error_message=(
+                f"Auto-apply browser is not available on this server. "
+                f"Please apply manually at: {inp.job_url}"
+            ),
+        )
+
     import asyncio
-    print(
-        "DIAGNOSTIC: event loop before Playwright launch",
-        "loop_type=", type(asyncio.get_running_loop()).__name__,
-        "policy_type=", type(asyncio.get_event_loop_policy()).__name__,
-    )
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
         context = await browser.new_context(
             user_agent=(
