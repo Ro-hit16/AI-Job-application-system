@@ -20,7 +20,7 @@ class NotificationService:
     async def send_email(self, subject: str, body: str, to_email: Optional[str] = None) -> bool:
         recipient = to_email or settings.NOTIFICATION_EMAIL_TO
         if not recipient or not settings.SMTP_USERNAME:
-            logger.warning("Email not configured, skipping")
+            logger.warning("Email recipient or SMTP_USERNAME not configured, skipping send", extra={"to": recipient})
             return False
         try:
             msg = MIMEMultipart("alternative")
@@ -32,10 +32,10 @@ class NotificationService:
                 server.starttls()
                 server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
                 server.sendmail(settings.SMTP_USERNAME, recipient, msg.as_string())
-            logger.info("Email sent", extra={"to": recipient, "subject": subject})
+            logger.info("Email sent successfully", extra={"to": recipient, "subject": subject})
             return True
         except Exception as e:
-            logger.error("Email send failed", extra={"error": str(e)})
+            logger.error("Email send failed", extra={"error": str(e), "to": recipient})
             return False
 
     async def send_webhook(self, title: str, message: str, color: int = 0x00FF00) -> bool:
@@ -52,7 +52,7 @@ class NotificationService:
             logger.error("Webhook failed", extra={"error": str(e)})
             return False
 
-    async def notify_new_match(self, job_title: str, company: str, score: float) -> None:
+    async def notify_new_match(self, job_title: str, company: str, score: float, to_email: Optional[str] = None) -> None:
         subject = f"New Job Match: {job_title} at {company} ({score:.0f}%)"
         body = f"""
         <h2>New Job Match Found!</h2>
@@ -61,33 +61,34 @@ class NotificationService:
         <p><strong>Match Score:</strong> {score:.1f}%</p>
         <p>Log in to review and approve the application.</p>
         """
-        await self.send_email(subject, body)
+        await self.send_email(subject, body, to_email=to_email)
         await self.send_webhook(subject, f"{job_title} at {company} — {score:.0f}% match", 0x00FF88)
 
-    async def notify_approval_required(self, job_title: str, company: str, app_id: str) -> None:
+    async def notify_approval_required(self, job_title: str, company: str, app_id: str, to_email: Optional[str] = None) -> None:
         subject = f"Approval Required: {job_title} at {company}"
         body = f"""
         <h2>Your Approval is Required</h2>
         <p><strong>Position:</strong> {job_title}</p>
         <p><strong>Company:</strong> {company}</p>
         <p>The resume has been tailored. Please review and approve or reject.</p>
-        <p><a href="http://localhost:3000/approvals/{app_id}">Review Application</a></p>
+        <p><a href="https://ai-job-application-system.vercel.app/approval">Review Application</a></p>
         """
-        await self.send_email(subject, body)
+        await self.send_email(subject, body, to_email=to_email)
         await self.send_webhook(subject, f"Approval needed for {job_title} at {company}", 0xFFAA00)
 
-    async def notify_application_submitted(self, job_title: str, company: str, confirmation: str) -> None:
+    async def notify_application_submitted(self, job_title: str, company: str, confirmation: str, to_email: Optional[str] = None) -> None:
         subject = f"Application Submitted: {job_title} at {company}"
         body = f"""
         <h2>Application Successfully Submitted!</h2>
         <p><strong>Position:</strong> {job_title}</p>
         <p><strong>Company:</strong> {company}</p>
-        <p><strong>Confirmation:</strong> {confirmation}</p>
+        <p><strong>Confirmation Number:</strong> {confirmation}</p>
+        <p>View application status in your <a href="https://ai-job-application-system.vercel.app/applications">Applications Dashboard</a>.</p>
         """
-        await self.send_email(subject, body)
+        await self.send_email(subject, body, to_email=to_email)
         await self.send_webhook(subject, f"✅ Applied to {job_title} at {company}", 0x00AAFF)
 
-    async def notify_application_failed(self, job_title: str, company: str, error: str) -> None:
+    async def notify_application_failed(self, job_title: str, company: str, error: str, to_email: Optional[str] = None) -> None:
         subject = f"Application Failed: {job_title} at {company}"
         body = f"""
         <h2>Application Submission Failed</h2>
@@ -95,7 +96,7 @@ class NotificationService:
         <p><strong>Company:</strong> {company}</p>
         <p><strong>Error:</strong> {error}</p>
         """
-        await self.send_email(subject, body)
+        await self.send_email(subject, body, to_email=to_email)
         await self.send_webhook(subject, f"❌ Failed to apply to {job_title} at {company}", 0xFF4444)
 
 

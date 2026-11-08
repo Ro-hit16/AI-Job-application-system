@@ -49,9 +49,20 @@ async def trigger_pipeline(
                 match_threshold=payload.match_threshold,
             )
             _run_store[run_id] = {**result, "run_id": run_id}
+
+            # Autonomous auto-apply for high-match jobs (>= 85.0% score)
+            from app.api.v1.applications import _submit_application_background
+            for app_info in result.get("applications", []):
+                app_id = app_info.get("application_id")
+                score = app_info.get("match_score") or 0
+                if score >= 85.0 and app_id:
+                    try:
+                        await _submit_application_background(app_id, str(user_id))
+                    except Exception as _apply_err:
+                        pass
         except Exception as e:
             import traceback
-            print("PIPELINE CRASH:", traceback.format_exc())  # ← add this
+            print("PIPELINE CRASH:", traceback.format_exc())
             _run_store[run_id] = {"run_id": run_id, "status": "failed", "error": str(e)}
 
     background_tasks.add_task(_run)

@@ -205,22 +205,26 @@ async def _create_application(job: JobData, resume_data: dict, user_id: str) -> 
 
         async with get_db_context() as db:
             # Check if an application already exists for this user and job
+            score = float(job.get("match_score", 0))
+            # 85%+ score jobs are marked approved for autonomous auto-application
+            target_status = "approved" if score >= 85.0 else "pending_approval"
+
             existing = await db.execute(
                 select(Application).where(Application.user_id == u_id, Application.job_id == j_id)
             )
             app = existing.scalar_one_or_none()
             if app:
-                app.match_score = job["match_score"]
-                if app.status not in ("approved", "applied"):
-                    app.status = "pending_approval"
+                app.match_score = score
+                if app.status not in ("approved", "submitted"):
+                    app.status = target_status
                 await db.flush()
             else:
                 app = Application(
                     user_id=u_id,
                     job_id=j_id,
                     resume_id=r_id,
-                    match_score=job["match_score"],
-                    status="pending_approval",
+                    match_score=score,
+                    status=target_status,
                 )
                 db.add(app)
                 await db.flush()

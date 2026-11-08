@@ -28,6 +28,8 @@ from sqlalchemy.orm import selectinload
 @router.get("/", response_model=list[ApplicationOut])
 async def list_applications(
     status: str | None = None,
+    min_score: float | None = None,
+    max_score: float | None = None,
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
@@ -39,21 +41,32 @@ async def list_applications(
     )
     if status:
         query = query.where(Application.status == status)
+    if min_score is not None:
+        query = query.where(Application.match_score >= min_score)
+    if max_score is not None:
+        query = query.where(Application.match_score <= max_score)
     result = await db.execute(query)
     return result.scalars().all()
 
 
 @router.get("/pending", response_model=list[ApplicationOut])
 async def list_pending_approvals(
+    min_score: float | None = None,
+    max_score: float | None = None,
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(
+    query = (
         select(Application)
         .options(selectinload(Application.job))
         .where(Application.user_id == user_id, Application.status == "pending_approval")
         .order_by(Application.created_at.desc())
     )
+    if min_score is not None:
+        query = query.where(Application.match_score >= min_score)
+    if max_score is not None:
+        query = query.where(Application.match_score <= max_score)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
@@ -440,10 +453,13 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
         from app.services.notification_service import get_notification_service
         notif = get_notification_service()
 
+        user_email = contact_info.get("email") if isinstance(contact_info, dict) else None
+
         if result.status == "submitted":
             await notif.notify_application_submitted(
                 job_title=job.title, company=job.company,
                 confirmation=result.confirmation_number or "Verified on page",
+                to_email=user_email,
             )
         elif result.status == "needs_manual_review":
             await notif.send_email(
@@ -456,11 +472,13 @@ async def _submit_application_background(application_id: str, user_id: str) -> N
                 <p><strong>Please apply manually:</strong> <a href="{job.url}">{job.url}</a></p>
                 <p>A screenshot of what the bot saw is saved on your server for reference.</p>
                 """,
+                to_email=user_email,
             )
         else:
             await notif.notify_application_failed(
                 job_title=job.title, company=job.company,
                 error=result.error_message or "Unknown error",
+                to_email=user_email,
             )
 
     except Exception as e:
