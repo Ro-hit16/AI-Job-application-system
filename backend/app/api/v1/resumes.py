@@ -1,10 +1,17 @@
 """
 api/v1/resumes.py — Resume Upload & Management
+
+IMPORTANT: Static/named routes (/upload, /template, /tailor-instant, /instant-download/...)
+MUST be declared BEFORE the wildcard /{resume_id} route, otherwise FastAPI will try to
+coerce the literal path segment (e.g. "template") into a UUID and return 422/404.
 """
 
+from pathlib import Path
 from uuid import UUID
-from app.schemas import ResumeOut, TemplateUpdateRequest
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,12 +19,24 @@ from app.config import get_settings
 from app.core.security import get_current_user_id
 from app.database import get_db
 from app.models.resume import Resume
-from app.schemas import ResumeOut
+from app.schemas import ResumeOut, TemplateUpdateRequest
 from app.services.pdf_service import get_pdf_service
 
 router = APIRouter(prefix="/resumes", tags=["resumes"])
 settings = get_settings()
 
+
+# ── Pydantic models ───────────────────────────────────────────────────────────
+
+class InstantTailorRequest(BaseModel):
+    job_title: str = Field(default="Full-Stack Developer", description="Target job title")
+    company: str = Field(default="", description="Company name")
+    job_description: str = Field(..., min_length=10, description="Full Job Description text")
+    instructions: str = Field(default="", description="Custom tailoring instructions or priorities")
+    custom_template: str = Field(default="", description="Optional custom LaTeX (.tex) template string to use")
+
+
+# ── Static / named routes (must come BEFORE /{resume_id}) ────────────────────
 
 @router.post("/upload", response_model=ResumeOut, status_code=201)
 async def upload_resume(
@@ -81,25 +100,6 @@ async def list_resumes(user_id: UUID = Depends(get_current_user_id), db: AsyncSe
     return result.scalars().all()
 
 
-@router.get("/{resume_id}", response_model=ResumeOut)
-async def get_resume(resume_id: UUID, user_id: UUID = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Resume).where(Resume.id == resume_id, Resume.user_id == user_id))
-    resume = result.scalar_one_or_none()
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
-    return resume
-
-
-@router.delete("/{resume_id}", status_code=204)
-async def delete_resume(resume_id: UUID, user_id: UUID = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Resume).where(Resume.id == resume_id, Resume.user_id == user_id))
-    resume = result.scalar_one_or_none()
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
-    await db.delete(resume)
-    await db.commit()
-
-
 # ── Dynamic LaTeX Template Management ─────────────────────────────────────────
 
 @router.get("/template", response_model=dict)
@@ -157,22 +157,6 @@ async def reset_template(
 
 
 # ── Instant JD Resume Tailoring ───────────────────────────────────────────────
-from pathlib import Path
-from pydantic import BaseModel, Field
-from fastapi.responses import FileResponse
-
-
-class TemplateUpdateRequest(BaseModel):
-    template: str = Field(..., min_length=20, description="Raw LaTeX (.tex) resume template")
-
-
-class InstantTailorRequest(BaseModel):
-    job_title: str = Field(default="Full-Stack Developer", description="Target job title")
-    company: str = Field(default="", description="Company name")
-    job_description: str = Field(..., min_length=10, description="Full Job Description text")
-    instructions: str = Field(default="", description="Custom tailoring instructions or priorities")
-    custom_template: str = Field(default="", description="Optional custom LaTeX (.tex) template string to use")
-
 
 @router.post("/tailor-instant", response_model=dict)
 async def tailor_resume_from_jd(
@@ -183,10 +167,10 @@ async def tailor_resume_from_jd(
     Directly analyze a pasted Job Description (JD), extract matching & highlighted skills,
     intelligently tailor resume bullet points and summary, and render a high-quality PDF.
     """
-    import uuid
-    from app.services.instant_tailor import generate_instant_tailored_pdf
+    import uuid as _uuid
+    from app.services.instant_tailor import format_resume_download_filename, generate_instant_tailored_pdf
 
-    tailor_id = str(uuid.uuid4())
+    tailor_id = str(_uuid.uuid4())
     output_dir = Path(settings.UPLOAD_DIR) / str(user_id) / "instant_tailored"
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"instant_{tailor_id}"
@@ -202,7 +186,6 @@ async def tailor_resume_from_jd(
         custom_template=data.custom_template,
     )
 
-    from app.services.instant_tailor import format_resume_download_filename
     clean_filename = format_resume_download_filename(candidate_name="Rohit Devkar", company=data.company)
 
     return {
@@ -233,3 +216,24 @@ async def download_instant_tailored_resume(
         filename=download_filename,
         media_type="application/pdf",
     )
+
+
+# ── Wildcard routes (MUST be last — after all named/static routes) ─────────────
+
+@router.get("/{resume_id}", response_model=ResumeOut)
+async def get_resume(resume_id: UUID, user_id: UUID = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Resume).where(Resume.id == resume_id, Resume.user_id == user_id))
+    resume = result.scalar_one_or_none()
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    return resume
+
+
+@router.delete("/{resume_id}", status_code=204)
+async def delete_resume(resume_id: UUID, user_id: UUID = Depends(get_current_user_id), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Resume).where(Resume.id == resume_id, Resume.user_id == user_id))
+    resume = result.scalar_one_or_none()
+    if not resume:
+        raise HTTPException(status_code=404, detail="Resume not found")
+    await db.delete(resume)
+    await db.commit()
