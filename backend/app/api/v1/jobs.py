@@ -70,11 +70,16 @@ async def download_job_tailored_resume(
         select(Application).where(Application.job_id == job_id, Application.user_id == user_id)
     )
     from app.services.instant_tailor import format_resume_download_filename
+    from app.models.user import User
 
     job_res = await db.execute(select(Job).where(Job.id == job_id))
     job = job_res.scalar_one_or_none()
     company = job.company if job else ""
-    clean_name = format_resume_download_filename(candidate_name="Rohit Devkar", company=company)
+
+    user_res = await db.execute(select(User).where(User.id == user_id))
+    user_obj = user_res.scalar_one_or_none()
+    candidate_name = user_obj.full_name if user_obj and user_obj.full_name else "Candidate"
+    clean_name = format_resume_download_filename(candidate_name=candidate_name, company=company)
 
     app = app_res.scalars().first()
     if app:

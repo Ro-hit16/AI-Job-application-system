@@ -125,6 +125,26 @@ async def resume_analysis_node(state: AgentState) -> dict:
 
         if not extracted:
             from app.services.instant_tailor import extract_skills_from_jd
+            import re as _re
+            from app.models.user import User
+
+            # Fetch user account details for secure, non-leaking fallback
+            cand_name = "Candidate"
+            cand_email = ""
+            async with get_db_context() as db:
+                u_res = await db.execute(select(User).where(User.id == resume.user_id))
+                u_obj = u_res.scalar_one_or_none()
+                if u_obj:
+                    cand_name = u_obj.full_name or "Candidate"
+                    cand_email = u_obj.email or ""
+
+            # Extract phone & email from candidate's own raw resume text
+            email_match = _re.search(r"[\w\.-]+@[\w\.-]+\.\w+", raw_text)
+            parsed_email = email_match.group(0) if email_match else cand_email
+
+            phone_match = _re.search(r"(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", raw_text)
+            parsed_phone = phone_match.group(0) if phone_match else ""
+
             found_skills = extract_skills_from_jd(raw_text)
             extracted = {
                 "skills": {
@@ -134,9 +154,9 @@ async def resume_analysis_node(state: AgentState) -> dict:
                     "tools": [s for s in found_skills if s in ["Docker", "Kubernetes", "AWS", "Git", "CI/CD", "GitHub Actions"]],
                     "all": found_skills,
                 },
-                "experience": [{"company": "Vivan Systems LLP", "role": "Full Stack Developer", "duration": "2024 - Present"}],
-                "education": [{"degree": "B.Tech in Computer Science", "institution": "Karmaveer Bhaurao Patil College of Engineering", "year": 2026}],
-                "contact_info": {"name": "Rohit Devkar", "email": "rohitdevkar2004@gmail.com", "phone": "+91-9322964724"},
+                "experience": [],
+                "education": [],
+                "contact_info": {"name": cand_name, "email": parsed_email, "phone": parsed_phone},
                 "years_of_experience": 2.0,
             }
 

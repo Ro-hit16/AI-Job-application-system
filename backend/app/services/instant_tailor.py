@@ -93,14 +93,14 @@ TECH_SKILL_CATALOG = {
 }
 
 
-def format_resume_download_filename(candidate_name: str = "Rohit Devkar", company: str | None = None) -> str:
+def format_resume_download_filename(candidate_name: str | None = None, company: str | None = None) -> str:
     """
     Format standard industry resume download filename:
-    e.g. 'Rohit_Devkar_Resume_Google' or 'Rohit_Devkar_Resume' (stem without .pdf extension)
+    e.g. 'Candidate_Resume_Google' or 'Candidate_Resume' (stem without .pdf extension)
     """
-    raw_name = (candidate_name or "Rohit Devkar").strip()
+    raw_name = (candidate_name or "Candidate").strip()
     name_clean = re.sub(r"[^\w\s-]", "", raw_name)
-    user_stem = "_".join(name_clean.split()) or "Rohit_Devkar"
+    user_stem = "_".join(name_clean.split()) or "Candidate"
 
     if company and company.strip():
         comp_clean = re.sub(r"[^\w\s-]", "", company.strip())
@@ -153,13 +153,15 @@ def tailor_resume_content(
         base_tex = load_resume_template(user_id)
     jd_skills = extract_skills_from_jd(f"{job_title} {job_description} {instructions}")
 
-    # Standard candidate skills from Rohit's background
-    candidate_skills = {
-        "JavaScript", "React.js", "Node.js", "Express.js", "MongoDB", "MySQL",
-        "RESTful APIs", "JWT Auth", "Docker", "Git", "GitHub Actions", "CI/CD",
-        "Python", "Java", "Tailwind CSS", "HTML5", "CSS3", "Agile / Scrum",
-        "AWS", "PostgreSQL", "FastAPI", "AI Integration", "LLMs", "LangGraph",
-    }
+    # Dynamically extract candidate skills from the candidate's active base template & uploaded resume
+    candidate_skills = set(extract_skills_from_jd(base_tex))
+    if not candidate_skills:
+        candidate_skills = {
+            "JavaScript", "React.js", "Node.js", "Express.js", "MongoDB", "MySQL",
+            "RESTful APIs", "JWT Auth", "Docker", "Git", "GitHub Actions", "CI/CD",
+            "Python", "Java", "Tailwind CSS", "HTML5", "CSS3", "Agile / Scrum",
+            "AWS", "PostgreSQL", "FastAPI", "AI Integration", "LLMs", "LangGraph",
+        }
 
     matched = [s for s in jd_skills if s in candidate_skills]
     highlighted = jd_skills[:8] if jd_skills else ["Full-Stack Development", "REST APIs", "Modern Web Apps"]

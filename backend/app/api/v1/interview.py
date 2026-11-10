@@ -83,7 +83,11 @@ async def start_interview_session(
             from app.services.latex_resume import load_resume_template
             resume_text = load_resume_template(user_id)
         except Exception:
-            resume_text = "Rohit Devkar - Full Stack Software Developer. Core competencies: React, Node.js, Python, PostgreSQL, AWS, Docker."
+            from app.models.user import User
+            u_res = await db.execute(select(User).where(User.id == user_id))
+            u_obj = u_res.scalar_one_or_none()
+            u_name = u_obj.full_name if u_obj else "Candidate"
+            resume_text = f"{u_name} - Software Developer. Core competencies: React, Node.js, Python, PostgreSQL, AWS, Docker."
 
     # Load job if job_id provided
     job_title = payload.job_title or "Software Developer"

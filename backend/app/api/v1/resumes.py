@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.core.security import get_current_user_id
 from app.database import get_db
 from app.models.resume import Resume
+from app.models.user import User
 from app.schemas import ResumeOut, TemplateUpdateRequest
 from app.services.pdf_service import get_pdf_service
 
@@ -77,6 +78,44 @@ async def upload_resume(
         existing = await db.execute(select(Resume).where(Resume.user_id == user_id, Resume.is_primary == True))
         for r in existing.scalars().all():
             r.is_primary = False
+
+    # Fetch user account details to personalize the template
+    user_res = await db.execute(select(User).where(User.id == user_id))
+    user_obj = user_res.scalar_one_or_none()
+    user_name = user_obj.full_name if user_obj else "Candidate"
+    user_email = user_obj.email if user_obj else ""
+
+    # Parse candidate phone and contact details from raw_text
+    import re as _re
+    cand_phone = ""
+    phone_m = _re.search(r"(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}", raw_text)
+    if phone_m:
+        cand_phone = phone_m.group(0)
+
+    # Extract email if present in resume, fallback to user_email
+    email_m = _re.search(r"[\w\.-]+@[\w\.-]+\.\w+", raw_text)
+    cand_email = email_m.group(0) if email_m else user_email
+
+    # Auto-generate personalized LaTeX resume for this specific user
+    try:
+        from app.services.latex_resume import get_user_template_path, save_user_resume_template, ROHIT_TEMPLATE_PATH
+        user_tpl = get_user_template_path(user_id)
+        if not user_tpl.is_file():
+            is_rohit = "rohit" in user_email.lower() or "rohit" in user_name.lower()
+            if is_rohit and ROHIT_TEMPLATE_PATH.is_file():
+                save_user_resume_template(user_id, ROHIT_TEMPLATE_PATH.read_text(encoding="utf-8"))
+            else:
+                from app.services.latex_generator import build_latex_from_candidate_data
+                cand_tex = build_latex_from_candidate_data(
+                    candidate_name=user_name,
+                    email=cand_email,
+                    phone=cand_phone,
+                    skills=skills_dict,
+                    summary=raw_text[:350] if raw_text else "",
+                )
+                save_user_resume_template(user_id, cand_tex)
+    except Exception as _e:
+        pass
 
     resume = Resume(
         user_id=user_id,
@@ -162,6 +201,7 @@ async def reset_template(
 async def tailor_resume_from_jd(
     data: InstantTailorRequest,
     user_id: UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Directly analyze a pasted Job Description (JD), extract matching & highlighted skills,
@@ -186,7 +226,10 @@ async def tailor_resume_from_jd(
         custom_template=data.custom_template,
     )
 
-    clean_filename = format_resume_download_filename(candidate_name="Rohit Devkar", company=data.company)
+    user_res = await db.execute(select(User).where(User.id == user_id))
+    user_obj = user_res.scalar_one_or_none()
+    candidate_name = user_obj.full_name if user_obj and user_obj.full_name else "Candidate"
+    clean_filename = format_resume_download_filename(candidate_name=candidate_name, company=data.company)
 
     return {
         "tailor_id": tailor_id,
@@ -202,7 +245,7 @@ async def tailor_resume_from_jd(
 @router.get("/instant-download/{tailor_id}")
 async def download_instant_tailored_resume(
     tailor_id: str,
-    name: str = "Rohit_Devkar_Resume",
+    name: str = "Candidate_Resume",
     user_id: UUID = Depends(get_current_user_id),
 ):
     """Download the generated PDF for an instant JD tailoring session."""

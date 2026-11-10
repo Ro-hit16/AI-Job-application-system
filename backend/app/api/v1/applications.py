@@ -131,7 +131,11 @@ async def download_updated_resume(
             company = job.company
 
     from app.services.instant_tailor import format_resume_download_filename
-    clean_resume_name = f"{format_resume_download_filename(candidate_name='Rohit Devkar', company=company)}.pdf"
+    from app.models.user import User
+    user_res = await db.execute(select(User).where(User.id == user_id))
+    user_obj = user_res.scalar_one_or_none()
+    candidate_name = user_obj.full_name if user_obj and user_obj.full_name else "Candidate"
+    clean_resume_name = f"{format_resume_download_filename(candidate_name=candidate_name, company=company)}.pdf"
 
     try:
         from app.services.instant_tailor import auto_ensure_application_pdf

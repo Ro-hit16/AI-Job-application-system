@@ -2,6 +2,7 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { applicationsApi, extractErrorDetail } from "../api/client";
+import { useAuthStore } from "../store/auth";
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -66,6 +67,7 @@ export default function Applications() {
   const [matchFilter, setMatchFilter] = useState("all");
   const [interveneId, setInterveneId] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const { user } = useAuthStore();
 
   const { data, isLoading } = useQuery({
     queryKey: ["applications", statusFilter],
@@ -127,9 +129,12 @@ export default function Applications() {
         const companyClean = targetApp?.job?.company
           ? targetApp.job.company.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_")
           : "";
+        const candidateName = user?.full_name
+          ? user.full_name.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_")
+          : "Resume";
         downloadName = companyClean
-          ? `Rohit_Devkar_Resume_${companyClean}.${ext}`
-          : `Rohit_Devkar_Resume.${ext}`;
+          ? `${candidateName}_Resume_${companyClean}.${ext}`
+          : `${candidateName}_Resume.${ext}`;
       }
 
       a.download = downloadName;
