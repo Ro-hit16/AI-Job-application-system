@@ -182,7 +182,7 @@ export default function Interview() {
   // ── SETUP ──────────────────────────────────────────────────────────────────
   if (phase === "setup") {
     return (
-      <div className="p-6 max-w-2xl">
+      <div className="p-4 sm:p-6 max-w-2xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
           <div className="bg-blue-100 p-2 rounded-lg">
             <BrainIcon className="w-6 h-6 text-blue-600" />
@@ -247,7 +247,7 @@ export default function Interview() {
     const progress = ((questionNumber - 1) / totalQuestions) * 100;
 
     return (
-      <div className="p-6 max-w-2xl">
+      <div className="p-4 sm:p-6 max-w-2xl mx-auto">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <BrainIcon className="w-5 h-5 text-blue-600" />
@@ -367,7 +367,7 @@ export default function Interview() {
   if (phase === "complete") {
     const overall = report?.scores?.overall ?? 0;
     return (
-      <div className="p-6 max-w-2xl">
+      <div className="p-4 sm:p-6 max-w-2xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Interview Complete!</h1>
           <button onClick={() => { setPhase("setup"); setReport(null); setSessionId(""); setTranscript(""); setEvaluation(""); setShowEval(false); }} className="text-sm text-blue-600 hover:underline">

@@ -246,3 +246,4 @@ def build_latex_from_candidate_data(
 \\end{{document}}
 """
     return tex
+

@@ -114,7 +114,7 @@ export default function ApprovalQueue() {
   if (isLoading) return <div className="p-6 text-gray-500">Loading approvals...</div>;
 
   return (
-    <div className="p-6 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-6 max-w-7xl mx-auto">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Approval Queue</h1>
@@ -156,7 +156,7 @@ export default function ApprovalQueue() {
             return (
               <div key={app.id} className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm hover:border-gray-300 transition-colors">
                 {/* Job Info Header */}
-                <div className="flex justify-between items-start mb-3">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-start gap-2 mb-3">
                   <div>
                     <h3 className="font-bold text-gray-900 text-lg">
                       {app.job?.title ?? "Software Engineer"} at{" "}
